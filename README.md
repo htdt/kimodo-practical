@@ -22,8 +22,14 @@ game from generated motion, but every stage states its contract in plain data
  certificate JSON)          QA gates → best-of-N →        crossfades, frame-data
                             canonicalize + frame data     gameplay, QA harness
         │                          │                              │
-   ALIGN.md                    BAKE.md                      INTEGRATE.md
+   ALIGN.md                BAKE.md + MOTIONBRICKS.md        INTEGRATE.md
 ```
+
+The motion generator is **NVIDIA MotionBricks**
+(<https://nvlabs.github.io/motionbricks/>) — a keyframe-conditioned motion
+model over the Unitree G1 skeleton, used entirely offline; the model never
+ships with the game. MOTIONBRICKS.md covers download, install, and running
+the generation tools in `motionbricks/` end to end.
 
 Two principles carry the whole design:
 
@@ -42,6 +48,7 @@ Two principles carry the whole design:
 |---|---|
 | `ALIGN.md` | Stage 1 manual: rig resolution, retargeting, certification battery |
 | `BAKE.md` | Stage 2 manual: pose libraries, move specs, generation gates, baking |
+| `MOTIONBRICKS.md` | Stage 2 setup: download/install/run the MotionBricks generator |
 | `INTEGRATE.md` | Stage 3 manual: runtime layers, root motion, combat timing, QA |
 | `rigmap.js` | bone → canonical-role resolution for arbitrary humanoid rigs |
 | `retarget.js` | the two-skeleton position-based retargeter |
@@ -49,12 +56,13 @@ Two principles carry the whole design:
 | `glbskel.mjs` | GLB → bone hierarchy + animation sampler in node (no browser) |
 | `certify.mjs` | certification CLI, writes `<char.glb>.retarget_certificate.json` |
 | `selftest.mjs` | zero-asset self-test (synthetic rigs, procedural motion, sabotage case) |
+| `motionbricks/` | Stage 2 generation tools (run inside the MotionBricks checkout): `posekit.py`, `movegen.py`, `bake_moves.py`, starter pose library, example move spec |
 
-The scripts are the complete Stage 1 implementation and the runtime retarget
-layer used in Stage 3. Stage 2's generation half is deliberately **not**
-code in this repo: it depends on your motion source (a generative model, a
-mocap library, hand keying). BAKE.md specifies the contracts — input pose
-format, gate thresholds, output clip format — that any source must meet.
+The JS scripts are the complete Stage 1 implementation and the runtime
+retarget layer used in Stage 3. The `motionbricks/` Python tools are the
+complete Stage 2 implementation for the MotionBricks source; BAKE.md also
+states the plain-data contracts (pose format, gate thresholds, clip format)
+any other motion source would have to meet.
 
 ## Quick start
 
@@ -66,9 +74,12 @@ npm test           # selftest: full synthetic certification, no assets needed
 Certify a character against motion clips (format in ALIGN.md):
 
 ```bash
-node certify.mjs character.glb --clips walk.json,kick.json
+node certify.mjs character.glb --clips baked/idle_stance.json,baked/walk_fwd.json
 # → character.glb.retarget_certificate.json, exit 0 = certified
 ```
+
+The clips come from the generator — MOTIONBRICKS.md walks through producing
+the example move set (`baked/*.json` + `manifest.json`) from scratch.
 
 Retarget any motion source onto any humanoid GLB in the browser:
 
@@ -87,13 +98,16 @@ rt.applyFrame(f);   // pose the rig for frame f, call per render tick
 You were probably sent here to add animated characters to a game. The order
 of work is fixed and each stage gates the next:
 
-1. Read **ALIGN.md**. Certify every character rig first. If certification
-   fails, fix or regenerate the rig — do not proceed with an uncertified
-   character; every downstream artifact would be built on a broken mapping.
-2. Read **BAKE.md**. Author the move set on the canonical skeleton, gate every
-   generated clip numerically, then look at filmstrips before accepting.
-   Output: canonicalized clips + a manifest + frame data.
-3. Read **INTEGRATE.md**. Wire the clips into the game with the three-layer
+1. Read **MOTIONBRICKS.md**. Install the motion generator (clone, LFS pull,
+   pip install, smoke test) and generate the example move set — you need
+   baked clips before you can certify anything.
+2. Read **ALIGN.md**. Certify every character rig. If certification fails,
+   fix or regenerate the rig — do not proceed with an uncertified character;
+   every downstream artifact would be built on a broken mapping.
+3. Read **BAKE.md**. Author the game's move set on the canonical skeleton,
+   gate every generated clip numerically, then look at filmstrips before
+   accepting. Output: canonicalized clips + a manifest + frame data.
+4. Read **INTEGRATE.md**. Wire the clips into the game with the three-layer
    architecture (clip / entity / game). Build the deterministic QA harness
    *before* tuning gameplay — it is what makes the rest debuggable.
 

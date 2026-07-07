@@ -14,15 +14,21 @@ pose library          move spec              generation             bake
 mine/author    ──►    keyframe schedule ──►  N seeds per move  ──►  canonicalize,
 keyframe poses        (JSON, per move)       → QA gates             frame data,
 (verified by eye)                            → best-of-N            manifest
+   posekit.py           moves_*.json            movegen.py           bake_moves.py
 ```
 
 ## 0. Prerequisites
 
-- A motion source. The validated path is a **keyframe-conditioned generative
-  inbetweener** (a model that takes context frames + a target keyframe window
-  and generates the motion between). Alternatives that fit the same pipeline:
-  cutting clips from a mocap library, a text-to-motion model, hand-keyed
-  animation — anything that can emit the clip format below.
+- A motion source. The validated path — the one this repo ships working
+  tooling for — is **NVIDIA MotionBricks**, a keyframe-conditioned generative
+  inbetweener over the Unitree G1 skeleton (takes 4 context frames + a
+  4-frame target keyframe window, generates the motion between).
+  **MOTIONBRICKS.md is the complete download/install/run manual**; the
+  `motionbricks/` directory holds the tools referenced throughout this stage
+  (`posekit.py`, `movegen.py`, `bake_moves.py`, a starter pose library and an
+  example move spec). Alternatives that fit the same pipeline: cutting clips
+  from a mocap library, a text-to-motion model, hand-keyed animation —
+  anything that can emit the clip format below.
 - A **certified character** to preview on (Stage 1, `certify.mjs` — see
   ALIGN.md). Never evaluate motion on an uncertified rig: you can't tell
   motion defects from transfer defects.
@@ -44,9 +50,11 @@ with its file, frame count, fps, loop flag, and frame data (§6).
 
 ## 2. Build a pose library
 
-A keyframe is a full-body pose on the canonical skeleton. Store poses as
-small **windows** (e.g. 4 consecutive frames — whatever your generator's
-constraint API takes), in two flavors:
+A keyframe is a full-body pose on the canonical skeleton. Tooling:
+`posekit.py` (scan / sheet / save / show / list / wrists — see its docstring
+and MOTIONBRICKS.md §7); a starter library `pose_library.json` ships with the
+repo. Store poses as small **windows** (e.g. 4 consecutive frames — whatever
+your generator's constraint API takes), in two flavors:
 
 - a **moving window** (consecutive frames from a real clip) keeps the pose's
   momentum — right for strike apexes and anything the motion should *swing
@@ -89,7 +97,8 @@ edit and a regenerate — never a runtime filter.
 
 ## 3. Write the move spec
 
-One JSON spec per move set. Two move types:
+One JSON spec per move set (`moves_example.json` is a complete 17-move
+reference). Two move types:
 
 ```jsonc
 {"moves": [
@@ -97,9 +106,9 @@ One JSON spec per move set. Two move types:
   {"name": "uppercut", "type": "keyframes",
    "start": "stance",              // context pose the move begins from
    "steps": [                      // each step = one generation chunk
-     {"pose": "crouch_deep", "frames": 24},
-     {"pose": "strike_rising", "frames": 24},
-     {"pose": "stance", "frames": 24}       // ALWAYS return to stance
+     {"pose": "crouch_deep", "tokens": 6},   // chunk length in 4-frame tokens
+     {"pose": "strike_rising", "tokens": 6},
+     {"pose": "stance", "tokens": 6}         // ALWAYS return to stance
    ]},
   // native-skill rollout (locomotion — the model's own prior is the source)
   {"name": "walk_fwd", "type": "mode", "mode": "walk", "dir": "fwd",
@@ -107,10 +116,10 @@ One JSON spec per move set. Two move types:
 ]}
 ```
 
-Useful per-step fields: target pose, duration (pin it, or let the model
-predict), root displacement `dxy` (for lunges and knockback), heading change.
-Move-level `loop: true` means "trim the result to its best pose-space cycle"
-(idles, walks).
+Useful per-step fields: target pose, duration (`tokens`: pin it, or omit and
+let the model predict), root displacement `dxy` in meters (for lunges and
+knockback), heading change `turn` in degrees. Move-level `loop: true` means
+"trim the result to its best pose-space cycle" (idles, walks).
 
 Design rules that survived a full move-set in production:
 
@@ -130,8 +139,9 @@ Design rules that survived a full move-set in production:
 
 Per move, run every seed (N = 8–16; make sampling stochastic so seeds
 actually differ) through the whole keyframe schedule, gate each candidate,
-keep the best. Generation is typically seconds per move on a consumer GPU —
-seeds are cheap, debugging a bad clip downstream is not.
+keep the best. `movegen.py --spec <spec> --seeds 8` does all of this and
+prints the gate table per seed. Generation is typically seconds per move on
+a consumer GPU — seeds are cheap, debugging a bad clip downstream is not.
 
 | gate | meaning | healthy | reject |
 |---|---|---|---|
@@ -155,7 +165,9 @@ than debugging through the retargeter.
 
 ## 5. Bake
 
-Canonicalize (§1), compute per-clip metadata, write clips + `manifest.json`.
+Canonicalize (§1), compute per-clip metadata, write clips + `manifest.json`
+(`bake_moves.py` — output goes straight into `certify.mjs --clips` and the
+Stage 3 runtime).
 Keep the baked clips character-agnostic; retargeting happens at load/run time
 through the certified retargeter (or, equivalently, pre-bake per-character
 engine-native clips — glTF animations, engine `AnimationClip`s — by running
