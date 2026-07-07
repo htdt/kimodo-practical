@@ -1,0 +1,40 @@
+{
+  "name": "skeleton-align",
+  "version": "0.1.0",
+  "description": "Rig-agnostic humanoid animation pipeline (align → bake → integrate): canonical role resolution, two-skeleton position-based retargeting, and a probe-pose certification battery with absolute gates and round-trip metrics",
+  "type": "module",
+  "main": "align.js",
+  "exports": {
+    ".": "./align.js",
+    "./retarget": "./retarget.js",
+    "./rigmap": "./rigmap.js",
+    "./glbskel": "./glbskel.mjs"
+  },
+  "bin": {
+    "skeleton-align-certify": "./certify.mjs"
+  },
+  "scripts": {
+    "test": "node selftest.mjs"
+  },
+  "dependencies": {
+    "three": "^0.160.0",
+    "@gltf-transform/core": "^4.4.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/htdt/skeleton-align.git"
+  },
+  "files": [
+    "align.js",
+    "retarget.js",
+    "rigmap.js",
+    "glbskel.mjs",
+    "certify.mjs",
+    "selftest.mjs",
+    "README.md",
+    "ALIGN.md",
+    "BAKE.md",
+    "INTEGRATE.md"
+  ]
+}
