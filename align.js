@@ -362,8 +362,12 @@ export function measureGates(rt, f, grounded) {
     const ab = capB.clone().sub(capA);
     const t = THREE.MathUtils.clamp(p.clone().sub(capA).dot(ab) / ab.lengthSq(), 0, 1);
     if (t <= 0 || t >= 1) continue;                    // beside, not within, the torso span
+    // radial is already ⊥ to the torso axis (closest-point construction), so
+    // its length IS the clearance. Do not zero radial.y: that assumes an
+    // upright torso — for prone/ground poses (horizontal hips→chest axis) it
+    // discards true clearance and false-fails the gate. For a vertical axis
+    // the perpendicular has ~no Y component, so upright behavior is unchanged.
     const radial = p.clone().sub(capA.clone().add(ab.multiplyScalar(t)));
-    radial.y = 0;
     minClear = Math.min(minClear, radial.length() / rt.capsuleR);
   }
   m.capsuleClearance = Number.isFinite(minClear) ? minClear : null;
@@ -478,6 +482,7 @@ export function certifyRig(target, probes, opts = {}) {
       twistFrac: +g.twistFrac.toFixed(2), twistDeg: +g.twistDeg.toFixed(1),
       twistWorstRole: g.twistWorstRole,
       footFlatDeg: g.footFlatDeg === null ? null : +g.footFlatDeg.toFixed(1),
+      footGroundFrac: g.footGroundFrac === null ? null : +g.footGroundFrac.toFixed(3),
       capsuleClearance: g.capsuleClearance === null ? null : +g.capsuleClearance.toFixed(2),
     });
   }

@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import {
   rigFromBones, srcMapFromRig, snapshotMotion, mineProbeFrames,
-  certifyRig, checkSideConsistency, resetBindPose,
+  certifyRig, checkSideConsistency, resetBindPose, DEFAULT_GATES,
 } from './align.js';
 
 let failures = 0;
@@ -117,6 +117,44 @@ const srcMap = srcMapFromRig(srcT.rig.map);
 const probes = mineProbeFrames([motion], srcMap);
 check('probes mined from synthetic clip', probes.numFrames === 7, `got ${probes.numFrames}`);
 
+// prone probe: supine pose (horizontal hips→chest axis) with the hands held
+// above the belly. Locks in the capsule-clearance fix: the gate must measure
+// the full radial clearance — an upright-torso shortcut (zeroing the radial's
+// Y component) reads hands-over-chest as "inside the torso" and false-fails
+// every lying pose (fall/knockdown clips) while leaving upright probes intact.
+{
+  const b = src.bones;
+  // point `bone` so the direction toward its child (dLocal in bind space) hits
+  // the world direction w: q = pq⁻¹ · R(pq·dLocal → w) · pq
+  const aimWorld = (bone, dLocal, w) => {
+    src.wrapper.updateMatrixWorld(true);
+    const pq = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+    const d0 = dLocal.clone().applyQuaternion(pq).normalize();
+    const R = new THREE.Quaternion().setFromUnitVectors(d0, w.clone().normalize());
+    bone.quaternion.copy(pq.clone().invert().multiply(R).multiply(pq));
+  };
+  const proneFrame = () => {
+    src.all.forEach(bone => bone.rotation.set(0, 0, 0));
+    b.pelvis.position.set(0, 0.15, 0);                 // lying height
+    b.pelvis.rotation.z = Math.PI / 2;                 // supine: torso axis → −X, chest up
+    // forearms folded across the chest: elbows out and lifted, each wrist
+    // crossing just past the midline while resting clear above the ribcage —
+    // the clearance is almost purely vertical (relative to the world), which
+    // is exactly the component an upright-torso shortcut throws away
+    aimWorld(b.upperarm_l, new THREE.Vector3(0, 0, -1), new THREE.Vector3(0.88, 0.48, 0));
+    aimWorld(b.lowerarm_l, new THREE.Vector3(0, 0, -1), new THREE.Vector3(0.37, 0.28, 0.88));
+    aimWorld(b.upperarm_r, new THREE.Vector3(0, 0, 1), new THREE.Vector3(0.88, 0.48, 0));
+    aimWorld(b.lowerarm_r, new THREE.Vector3(0, 0, 1), new THREE.Vector3(0.37, 0.28, -0.88));
+    src.wrapper.updateMatrixWorld(true);
+  };
+  const snap = snapshotMotion(srcT.orderedBones, proneFrame, 1, FPS, 'prone');
+  probes.pos.push(snap.pos[0]);
+  probes.quat.push(snap.quat[0]);
+  probes.probeTags.push('prone:sprawl');
+  probes.probeGrounded.push({ Left: false, Right: false });
+  probes.numFrames += 1;
+}
+
 // full certification source→target
 const cert = certifyRig(tgtT, probes, { srcMap });
 check('synthetic source→target certifies', cert.pass, cert.failures.join('; '));
@@ -125,6 +163,16 @@ check('  bone stretch ~0', cert.gates.boneStretchPct < 0.1, `${cert.gates.boneSt
 check('  round trip tight', cert.gates.roundTripMean < 0.05 && cert.gates.roundTripP95 < 0.10,
   `mean ${cert.gates.roundTripMean} p95 ${cert.gates.roundTripP95}`);
 console.log('     gates:', JSON.stringify(cert.gates));
+
+// the prone probe must clear the capsule gate on its true (un-zeroed) radial —
+// re-introducing the upright-torso assumption in measureGates drops it to ~0
+{
+  const prone = cert.probes.find(p => p.tag === 'prone:sprawl');
+  check('prone probe capsule clearance measured', prone && prone.capsuleClearance !== null);
+  check('prone probe passes capsule gate', prone &&
+    prone.capsuleClearance >= DEFAULT_GATES.capsuleClearance,
+  `clearance ${prone?.capsuleClearance} < ${DEFAULT_GATES.capsuleClearance}`);
+}
 
 // sabotage: mirrored legs must FAIL certification via the absolute side gate
 {
