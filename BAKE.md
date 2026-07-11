@@ -121,6 +121,43 @@ let the model predict), root displacement `dxy` in meters (for lunges and
 knockback), heading change `turn` in degrees. Move-level `loop: true` means
 "trim the result to its best pose-space cycle" (idles, walks).
 
+Move-level fields for the world-space gates (§4): `"min_airborne": 6` rejects
+any seed without at least that many consecutive frames of BOTH ankles above
+`"airborne_z"` (default 0.12 m) — this is how a jump is made to actually fly.
+
+### 3a. Declarative post-generation edits
+
+Some clips only become readable after qpos-space surgery — the field example
+was a slide whose extended leg vanished into the torso silhouette on a chase
+camera. Doing that surgery in a one-off script means it is silently lost on
+every regeneration. Put it in the move spec instead — a `"post"` block, a
+list of ops applied per seed, in order, BEFORE gating (the gates must judge
+exactly what ships), implemented in `qposops.py`:
+
+```jsonc
+{"name": "slide", "type": "keyframes",
+ "steps": [ ... ],
+ "post": [
+   {"blend_to_pose": "slide_lunge", "frames": [12, 28], "max_w": 0.9},
+   {"yaw_twist": 0.62, "frames": [12, 28]},
+   {"ground_clamp": true}
+ ]}
+```
+
+- `blend_to_pose` blends the joint dofs toward a pose-library pose over the
+  frame window with a raised-cosine envelope peaking at `max_w`. Root and
+  authored channels (wrists, §2d) are never touched.
+- `yaw_twist` adds a yaw rotation (radians, about world up, in place about
+  the pelvis) with the same envelope — reshapes the silhouette without
+  moving the root path.
+- `ground_clamp` lifts the root by the smoothed per-frame ankle penetration
+  (same fix as `--groundfix`, §4, but scoped to this move).
+
+Frame indices refer to the clip the filmstrip shows (after loop trimming);
+pin `tokens` on the steps so the layout is stable across seeds. Post edits
+are for readability surgery on an otherwise-good generation — a *weak pose*
+is still a pose-library edit and a regenerate (§7).
+
 Design rules that survived a full move-set in production:
 
 - **Bookend every move with the same stance pose.** Start from it, end on it.
@@ -149,13 +186,28 @@ a consumer GPU — seeds are cheap, debugging a bad clip downstream is not.
 | foot skate | mean horizontal ankle speed during ground contact | source-prior level | rising above it |
 | jitter | mean 2nd difference of joint angles | ≤ 0.03 rad | visible vibration |
 | limit violations | fraction of frames outside joint range | 0.0 | any |
+| min world ankle height | lowest world ankle Z anywhere in the clip | ≥ −0.03 m | below = floor penetration, seed rejected |
+| airborne frames | longest run of consecutive frames with both ankles above 0.12 m | ≥ the move's `min_airborne` | below = the "jump" never flew, seed rejected |
 
 **Gate what you actually care about, in world space.** A cautionary tale: a
-"jump" selected by these gates alone never left the ground — foot-skate gates
-*reward* staying planted, and a pelvis-relative arrival error can't see root
-height. The fix was a keyframe through a mined airborne pose plus a direct
-check on pelvis/ankle world trajectories. When a move has a defining physical
-property (airborne, floor contact, displacement), assert it explicitly.
+"jump" selected by the first four gates alone never left the ground —
+foot-skate gates *reward* staying planted, and a pelvis-relative arrival
+error can't see root height. The same blindness lets ground-contact moves
+ship ankles below the floor: the inbetweener has no ground-contact
+constraint, so an authored slide pose drove the source ankles to −0.17 m and
+only the downstream certification gate caught it. The last two table rows are
+the standing fix, and they are **hard rejects, not score terms** — a seed
+with a defining physical defect must not win best-of-N no matter how clean
+its keyframe arrival is. Declare flight per move (`"min_airborne"`, §3);
+penetration is rejected everywhere. When a move has any other defining
+physical property (displacement, floor time), assert it the same way.
+
+**`--groundfix`.** Small penetrations on otherwise-best seeds don't have to
+cost a regeneration: `movegen.py --groundfix` lifts the root per frame by the
+maximum ankle penetration (smoothed, and re-maxed so smoothing never leaves
+residual contact) before gating. Use it as the default for move sets with
+ground work; per-move, the same fix is available as a `"ground_clamp"` post
+op (§3a).
 
 **The reject loop.** Keyframe unreachable on all seeds → reduce overshoot or
 add an intermediate step. Duration feels wrong → pin a different length. One

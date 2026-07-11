@@ -11,15 +11,25 @@ Takes a move-set spec (JSON) whose moves are either
 
 Each move is generated with N stochastic seeds (gumbel pose-token sampling),
 scored by numeric QA gates (keyframe-hit error, foot skate, jitter, root
-drift, joint limits) and the best seed is kept. Output per move:
+drift, joint limits) and hard-gated in WORLD space (BAKE.md §4): seeds whose
+ankles pierce the floor (min world ankle height < qposops.GROUND_EPS) or that
+never truly fly when the move demands it (spec `"min_airborne": N` frames
+with both ankles above `"airborne_z"`) are rejected outright — best-of-N then
+selects for the move's defining physical property instead of against it.
+The best surviving seed is kept. Output per move:
   out/moves/<name>.npz    generate_motion.py-compatible (xpos/xquat/qpos/...)
   out/moves/<name>.json   gates for every seed + frame data (startup/active/
                           recovery from the keyframe schedule)
 
+A move's spec may carry a declarative `"post"` edit block (BAKE.md §3) —
+blend_to_pose / yaw_twist / ground_clamp, applied per seed BEFORE gating so
+the gates judge exactly what ships and cleanups survive every regeneration.
+`--groundfix` additionally runs the root-lift ground clamp on every seed.
+
 Usage (from GR00T-WholeBodyControl/motionbricks/, in the MotionBricks env —
 see MOTIONBRICKS.md for setup):
   xvfb-run -a python movegen.py --spec moves_example.json
-  ... --only jab,kick_front --seeds 8 --out-dir out/moves
+  ... --only jab,kick_front --seeds 8 --out-dir out/moves --groundfix
 """
 import argparse
 import json
@@ -34,6 +44,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 from mbstack import build_args, DEVICE
+from qposops import (GROUND_EPS, AIRBORNE_Z, WRIST_COLS,
+                     airborne_frames, apply_ground_clamp, apply_post)
 from motionbricks.motion_backbone.demo.utils import navigation_demo
 from motionbricks.motionlib.core.utils.rotations import angle_to_Y_rotation_matrix
 
@@ -204,9 +216,8 @@ def gen_mode_move(agent, mode_name, chunks, direction, seed, start_qpos=None):
 
 
 # ---------------------------------------------------------------- wrist authoring
-
-WRIST_COLS = [26, 27, 28, 33, 34, 35]        # L roll/pitch/yaw, R roll/pitch/yaw
-
+# wrist dof columns (L roll/pitch/yaw, R roll/pitch/yaw) come from qposops so
+# the post-edit ops protect exactly the channels authored here
 
 def author_wrists(qpos, anchors):
     """Wrist dofs are CONTROL channels, not model channels. Nothing upstream
@@ -238,6 +249,9 @@ def author_wrists(qpos, anchors):
 
 # ---------------------------------------------------------------- QA gates
 
+ANKLES = ("left_ankle_roll_link", "right_ankle_roll_link")
+
+
 class Gates:
     def __init__(self, demo):
         self.m = demo.mj_model
@@ -247,6 +261,11 @@ class Gates:
         # dof ranges (skip the free joint)
         self.lo = self.m.jnt_range[1:, 0].copy()
         self.hi = self.m.jnt_range[1:, 1].copy()
+
+    def ankle_z(self, qpos):
+        """World ankle heights (F, 2) — the FK feed for qposops ground/air ops."""
+        xpos, _ = self.fk(qpos)
+        return np.stack([xpos[:, self.bid[n], 2] for n in ANKLES], axis=1)
 
     def fk(self, qpos):
         F = len(qpos)
@@ -259,14 +278,21 @@ class Gates:
             xquat[i] = self.d.xquat
         return xpos, xquat
 
-    def eval(self, qpos, keyframes):
+    def eval(self, qpos, keyframes, airborne_z=AIRBORNE_Z):
         """keyframes: list of (frame_idx, arrival_qpos (36,)) checkpoints."""
         xpos, xquat = self.fk(qpos)
         r = {}
 
+        # --- world-space ground/air facts (BAKE.md §4): the inbetweener has no
+        # ground-contact constraint and the arrival gate is root-relative, so
+        # floor penetration and fake "jumps" are invisible to every other gate
+        az = np.stack([xpos[:, self.bid[n], 2] for n in ANKLES], axis=1)
+        r["min_ankle_z"] = float(az.min())
+        r["airborne_frames"] = airborne_frames(az, airborne_z)
+
         # --- foot skate: horizontal ankle speed while in contact ---
         skates = []
-        for name in ("left_ankle_roll_link", "right_ankle_roll_link"):
+        for name in ANKLES:
             p = xpos[:, self.bid[name]]
             contact = p[:, 2] < (p[:, 2].min() + 0.03)
             v = np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1) * FPS
@@ -392,6 +418,10 @@ def main():
     ap.add_argument("--only", default=None)
     ap.add_argument("--seeds", type=int, default=8)
     ap.add_argument("--out-dir", default="out/moves")
+    ap.add_argument("--groundfix", action="store_true",
+                    help="lift the root by the smoothed per-frame ankle "
+                         "penetration on every seed (qposops.apply_ground_clamp) "
+                         "before gating")
     a = ap.parse_args()
 
     with open(a.spec) as fp:
@@ -409,6 +439,8 @@ def main():
             continue
         print(f"\n=== {name} ({move['type']}) ===")
         results = []
+        all_gates = []
+        min_air = int(move.get("min_airborne", 0))
         for seed in range(a.seeds):
             try:
                 if move["type"] == "keyframes":
@@ -425,27 +457,53 @@ def main():
                 if move.get("loop"):
                     qpos, loop_err = loop_trim(qpos)
                     checkpoints = []
-                g = gates.eval(qpos, checkpoints)
+                # declarative post edits + optional ground clamp BEFORE gating:
+                # the gates must judge exactly what ships
+                if move.get("post"):
+                    qpos = apply_post(qpos, move["post"], lib, gates.ankle_z)
+                if a.groundfix:
+                    qpos = apply_ground_clamp(qpos, gates.ankle_z(qpos))
+                g = gates.eval(qpos, checkpoints, move.get("airborne_z", AIRBORNE_Z))
                 g["frames"] = len(qpos)
                 g["seed"] = seed
                 g["score"] = score(g)
-                results.append((g["score"], seed, qpos, g, bounds))
+                # world-space hard gates (BAKE.md §4) — rejects, not score terms:
+                # a seed that pierces the floor or never flies must not win
+                rejects = []
+                if g["min_ankle_z"] < GROUND_EPS:
+                    rejects.append(f"ground: min_ankle_z {g['min_ankle_z']:.3f} < {GROUND_EPS}")
+                if g["airborne_frames"] < min_air:
+                    rejects.append(f"air: {g['airborne_frames']} < min_airborne {min_air}")
+                g["rejected"] = "; ".join(rejects) or None
+                all_gates.append(g)
                 print(f"  seed {seed}: score {g['score']:.4f}  kf_err {g['keyframe_ee_err']:.3f} "
                       f"skate {g['foot_skate_mean']:.3f}  jitter {g['jitter_mean']:.4f} "
-                      f"frames {len(qpos)}")
+                      f"ankle {g['min_ankle_z']:+.3f}  air {g['airborne_frames']:2d}  "
+                      f"frames {len(qpos)}" +
+                      (f"  REJECTED ({g['rejected']})" if rejects else ""))
+                if rejects:
+                    continue
+                results.append((g["score"], seed, qpos, g, bounds))
             except Exception as e:
                 print(f"  seed {seed}: FAILED {e}")
 
         if not results:
-            print(f"  !! no successful seeds for {name}")
+            print(f"  !! no surviving seeds for {name} "
+                  f"({len(all_gates)} generated, all rejected or failed)")
             continue
         results.sort(key=lambda r: r[0])
         _, best_seed, best_q, best_g, bounds = results[0]
         export_npz(demo, best_q, os.path.join(a.out_dir, f"{name}.npz"), name)
 
         meta = {"name": name, "best_seed": best_seed, "gates": best_g,
-                "all_seeds": [r[3] for r in results],
+                "all_seeds": all_gates,
                 "segment_bounds": bounds, "fps": FPS}
+        if move.get("post"):
+            meta["post"] = move["post"]
+        if a.groundfix:
+            meta["groundfix"] = True
+        if min_air:
+            meta["min_airborne"] = min_air
         if move["type"] == "keyframes" and bounds and not move.get("loop"):
             meta["frame_data"] = {"startup": bounds[1] - 4,
                                   "active": [bounds[1] - 4, bounds[1]],
