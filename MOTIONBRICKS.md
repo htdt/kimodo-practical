@@ -87,8 +87,10 @@ cp motionbricks-practical/motionbricks/*.py \
 | `posekit.py` | pose library: mine/inspect/save keyframe poses (BAKE.md §2) |
 | `pose_library.json` | starter library — 15 poses (stance, strikes, kicks, hits, …) |
 | `movegen.py` | keyframe-conditioned move generation, best-of-N + QA gates (BAKE.md §3–4) |
+| `qposops.py` | pure-numpy qpos ops: world-space ground/air gates + the spec's `"post"` edit block (BAKE.md §3a, §4); self-tests with `python qposops.py` |
 | `moves_example.json` | example move spec — a 17-move fighting-game set |
-| `bake_moves.py` | canonicalize + export motion JSONs + manifest (BAKE.md §5) |
+| `bake_moves.py` | canonicalize + trim + export motion JSONs + manifest (BAKE.md §5) |
+| `pipeline.py` | one-command rebake ritual: movegen → bake → certify → prebake |
 | `make_motion_json.py` | MuJoCo Z-up → three.js Y-up conversion + the G1→humanoid bone map |
 
 ## 4. Smoke test
@@ -122,13 +124,26 @@ python bake_moves.py --in-dir out/moves --out-dir baked --spec moves_example.jso
 ```
 
 `movegen.py` prints per-seed gate values (keyframe arrival error, foot skate,
-jitter, limit violations — thresholds and meaning in BAKE.md §4) and writes
-`out/moves/<move>.npz` + `<move>.json` (all seeds' gates + frame data).
-`bake_moves.py` turns those into `baked/<move>.json` motion clips
-(canonicalized, Y-up, ALIGN.md clip format) plus `baked/manifest.json` — the
+jitter, limit violations, plus the world-space ground/air gates — thresholds
+and meaning in BAKE.md §4) and writes `out/moves/<move>.npz` + `<move>.json`
+(all seeds' gates + frame data). `bake_moves.py` turns those into
+`baked/<move>.json` motion clips (canonicalized, trimmed, Y-up, ALIGN.md clip
+format) plus `baked/manifest.json` (frames, fps, loop flag, frame data) — the
 exact inputs Stage 1 certification (`certify.mjs --clips`) and the Stage 3
 runtime consume. Generation is seconds per seed on a consumer GPU; a full
 17-move × 8-seed run is roughly a coffee break.
+
+The whole rebake ritual — regenerate changed moves, re-bake the spec (post
+edits, trims, loop flags), re-certify, re-prebake — is one command:
+
+```bash
+python pipeline.py --spec your_moves.json --moves slide --seeds 8 --groundfix \
+    --char hero.glb --practical ~/src/motionbricks-practical
+```
+
+Every stage is one of the plain tools above (run any of them by hand); a
+failed certification aborts the chain before prebake. Without `--char` the
+chain stops after the bake with fresh clips + manifest.
 
 ## 6. The end-to-end path
 
