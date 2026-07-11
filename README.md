@@ -56,7 +56,8 @@ Two principles carry the whole design:
 | `align.js` | probe mining, inverse recovery, gates, `certifyRig` |
 | `glbskel.mjs` | GLB → bone hierarchy + animation sampler in node (no browser) |
 | `certify.mjs` | certification CLI, writes `<char.glb>.retarget_certificate.json` |
-| `selftest.mjs` | zero-asset self-test (synthetic rigs, procedural motion, sabotage case) |
+| `prebake.mjs` | Stage 3 pre-bake for non-three.js engines: character GLB + baked manifest → same GLB with one glTF animation per clip + `rootmotion.json` (INTEGRATE.md §9) |
+| `selftest.mjs` | zero-asset self-test (synthetic rigs, procedural motion, sabotage cases) |
 | `motionbricks/` | Stage 2 generation tools (run inside the MotionBricks checkout): `posekit.py`, `movegen.py`, `bake_moves.py`, starter pose library, example move spec |
 
 The JS scripts are the complete Stage 1 implementation and the runtime

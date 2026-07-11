@@ -8,7 +8,8 @@
     ".": "./align.js",
     "./retarget": "./retarget.js",
     "./rigmap": "./rigmap.js",
-    "./glbskel": "./glbskel.mjs"
+    "./glbskel": "./glbskel.mjs",
+    "./prebake": "./prebake.mjs"
   },
   "bin": {
     "motionbricks-certify": "./certify.mjs"
@@ -31,6 +32,7 @@
     "rigmap.js",
     "glbskel.mjs",
     "certify.mjs",
+    "prebake.mjs",
     "selftest.mjs",
     "README.md",
     "ALIGN.md",

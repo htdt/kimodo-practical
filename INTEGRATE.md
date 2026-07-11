@@ -204,3 +204,20 @@ snapshot blend — same ~5-frame duration, same stance-bookend assumption).
 Frame-data JSON and the derived-reach formula port unchanged. The runtime
 cost is identical to hand-authored animation — that is the point of the
 design.
+
+`prebake.mjs` is the shipped pre-bake tool:
+
+```bash
+node prebake.mjs character.glb --manifest baked/manifest.json --out character_anim.glb \
+     [--rootmotion rootmotion.json] [--ylift jump_gap=1.5]
+```
+
+It runs the certified retargeter offline over every clip in the manifest
+(`inPlace: true`, continuity guard armed, sequential frames) and writes the
+same GLB with one glTF animation per move (per-joint local rotations + hips
+local translation), plus a `rootmotion.json` with each clip's absolute pelvis
+X/Z per frame in character-scaled meters, hip height, loop flag, and frame
+data — everything the entity layer needs to integrate root motion exactly as
+in §3. `--ylift` applies §3's per-clip vertical amplification at bake time.
+Field-validated with Babylon's glTF loader and `AnimationGroup` weight
+blending, used unchanged.

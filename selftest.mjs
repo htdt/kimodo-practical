@@ -2,13 +2,19 @@
 // two synthetic humanoids from scratch (different naming families, different
 // bind facings, different proportions, one with a 0.01-scaled armature),
 // procedurally animates the source, and runs the full alignment certification
-// source→target, plus a mirrored-map sabotage that must FAIL.
-// Usage: node selftest.mjs   (needs only node_modules: three)
+// source→target, plus a mirrored-map sabotage that must FAIL. A prebake leg
+// (INTEGRATE.md §9) round-trips the target through a generated GLB.
+// Usage: node selftest.mjs   (needs only node_modules: three + @gltf-transform/core)
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import * as THREE from 'three';
+import { Document, NodeIO } from '@gltf-transform/core';
 import {
   rigFromBones, srcMapFromRig, snapshotMotion, mineProbeFrames,
   certifyRig, checkSideConsistency, resetBindPose, DEFAULT_GATES,
 } from './align.js';
+import { prebake } from './prebake.mjs';
 
 let failures = 0;
 function check(label, ok, detail = '') {
@@ -188,5 +194,86 @@ console.log('     gates:', JSON.stringify(cert.gates));
 }
 
 resetBindPose(tgtT);
+
+// ---------------------------------------------------------------- prebake leg
+// INTEGRATE.md §9: write the target skeleton to a GLB and the synthetic source
+// animation (with real forward travel) to a baked-clip JSON + manifest, run
+// prebake, and verify the GLB gained the animation and the root-motion export
+// reproduces the source pelvis curve × scaleRoot.
+{
+  // pristine bind, then re-pose with horizontal travel so root motion is real
+  src.all.forEach(b => b.rotation.set(0, 0, 0));
+  src.bones.pelvis.position.set(0, basePelvisY, 0);
+  src.wrapper.updateMatrixWorld(true);
+  const travelClip = snapshotMotion(srcT.orderedBones, (f) => {
+    pose(f);
+    src.bones.pelvis.position.x = 0.02 * f;
+    src.wrapper.updateMatrixWorld(true);
+  }, N, FPS, 'selftest_clip');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-selftest-'));
+  try {
+    // target skeleton as a GLB (joints-only skin is all loadGLBBones needs)
+    const doc = new Document();
+    doc.createBuffer();
+    const scene = doc.createScene('scene');
+    const skin = doc.createSkin('skin');
+    const nodes = {};
+    for (const [name, [parent, pos]] of Object.entries(tgtSpec)) {
+      nodes[name] = doc.createNode(name).setTranslation(pos);
+      (parent ? nodes[parent] : scene).addChild(nodes[name]);
+      skin.addJoint(nodes[name]);
+    }
+    const glbPath = path.join(dir, 'char.glb');
+    await new NodeIO().write(glbPath, doc);
+
+    fs.writeFileSync(path.join(dir, 'selftest_clip.json'),
+      JSON.stringify({ ...travelClip, srcMap }));
+    const manifestPath = path.join(dir, 'manifest.json');
+    fs.writeFileSync(manifestPath, JSON.stringify({ moves: [{
+      name: 'selftest_clip', file: 'selftest_clip.json', loop: true,
+      frame_data: { startup: 10, active: [10, 14], recovery: N - 14 },
+    }] }));
+
+    const { outPath, rmPath } = await prebake({
+      glb: glbPath, manifest: manifestPath,
+      out: path.join(dir, 'char_anim.glb'), log: () => {},
+    });
+
+    const outDoc = await new NodeIO().read(outPath);
+    const anims = outDoc.getRoot().listAnimations();
+    check('prebake: one glTF animation per manifest clip',
+      anims.length === 1 && anims[0].getName() === 'selftest_clip');
+    const channels = anims[0]?.listChannels() ?? [];
+    const rot = channels.filter(c => c.getTargetPath() === 'rotation');
+    const hipsT = channels.find(c => c.getTargetPath() === 'translation'
+      && c.getTargetNode()?.getName() === 'Hips');
+    check('prebake: rotation channel per joint', rot.length === Object.keys(tgtSpec).length,
+      `got ${rot.length} of ${Object.keys(tgtSpec).length}`);
+    check('prebake: hips translation channel present', !!hipsT);
+    check('prebake: sampler covers every frame',
+      !!hipsT && hipsT.getSampler().getInput().getArray().length === N);
+
+    const rm = JSON.parse(fs.readFileSync(rmPath, 'utf8'));
+    const clip = rm.clips.selftest_clip;
+    const k = rm.scaleRoot;
+    check('prebake: scaleRoot sane', Number.isFinite(k) && k > 0.5 && k < 2, `scaleRoot ${k}`);
+    const pi = travelClip.names.indexOf(srcMap.Hips);
+    let worst = 0;
+    for (let f = 0; f < N; f++) {
+      worst = Math.max(worst,
+        Math.abs(clip.pelvisXZ[f][0] - travelClip.pos[f][pi][0] * k),
+        Math.abs(clip.pelvisXZ[f][1] - travelClip.pos[f][pi][2] * k),
+        Math.abs(clip.hipY[f] - travelClip.pos[f][pi][1] * k));
+    }
+    check('prebake: root motion matches source pelvis curve × scaleRoot',
+      worst < 1e-9, `worst |err| ${worst}`);
+    check('prebake: loop flag + frame data pass through',
+      clip.loop === true && clip.frameData?.startup === 10);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log(failures ? `\n${failures} FAILURES` : '\nselftest passed (no external assets used)');
 process.exit(failures ? 1 : 0);
