@@ -2,3 +2,4 @@ node_modules/
 package-lock.json
 *.retarget_certificate.json
 *.glb
+__pycache__/
