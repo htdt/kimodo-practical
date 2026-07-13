@@ -155,6 +155,10 @@ def main():
             # channels read as "broken fists" on fingerless fist meshes —
             # keep 30% of the source wrist, ride the forearm for the rest
             "handFollow": 0.3,
+            # forearm roll from the source's own twist (true pronation)
+            # instead of the chest-rebase projection, which spins the fist
+            # during big torso pitches (jump crouch)
+            "foreRollSrc": True,
         }
         with open(os.path.join(a.web_dir, f"{name}.json"), "w") as fp:
             json.dump(out, fp)

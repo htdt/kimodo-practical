@@ -365,6 +365,9 @@ export class Retargeter {
       // value (clip JSON handFollow) and keep only a hint of wrist life.
       // Authored-wrist sources (the G1 set) default to 1.
       this.handFollow = handFollow ?? data.handFollow ?? 1;
+      // forearm roll from the source's own twist instead of the body-rebase
+      // projection (see the AIM branch); opt-in per clip (data.foreRollSrc)
+      this.foreRollSrc = data.foreRollSrc ?? false;
     }
     this.contBones = new Set(CONT_ROLES.map(r => this.R[r]).filter(n => n && bones[n]));
   }
@@ -519,6 +522,22 @@ export class Retargeter {
         const baseDir = this.bindDir[b.name].clone().applyQuaternion(D).normalize();
         const qAim = new THREE.Quaternion().setFromUnitVectors(baseDir, dTarget);
         target = qAim.multiply(D.clone()).multiply(this.bindWorldQ[b.name]);
+        // FOREARM ROLL from the source (clips with foreRollSrc, e.g. Kimodo):
+        // the body-rebase roll above projects chest pitch onto the forearm
+        // axis — during a deep jump crouch the forearm SPINS up to 45°/frame
+        // while pointing the same way, and the fist (riding it) spins too.
+        // Rebuild the forearm from the source forearm's full world delta
+        // (carries the true mocap pronation/supination — stable), then
+        // rotate minimally onto the aimed direction. The residual minrot is
+        // small (source dir ≈ aimed dir), so it adds no twist artifact.
+        if (this.foreRollSrc && this.hasQuat &&
+            (aimRole === 'LeftForeArm' || aimRole === 'RightForeArm')) {
+          const dSrc = this._yawRebase(this._q(this.data.quat[f][this.idx[sj]])
+            .multiply(this._q(this.data.restQuat[this.idx[sj]]).invert()));
+          const candDir = this.bindDir[b.name].clone().applyQuaternion(dSrc).normalize();
+          const fix = new THREE.Quaternion().setFromUnitVectors(candDir, dTarget);
+          target = fix.multiply(dSrc).multiply(this.bindWorldQ[b.name]);
+        }
       } else if (this.hasQuat && this.handByBone[b.name]) {
         // hands: FOREARM-RELATIVE — ride the character's forearm and add the
         // source's own wrist-vs-forearm delta (identity at source rest), then

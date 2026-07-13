@@ -127,6 +127,16 @@ visibly skewed fists and toes-up feet. Two facts to bake by:
 All three mistakes are caught mechanically by `qa_endeffectors.mjs` (§4) —
 run it after any bake or retargeter change.
 
+**Forearm roll (`foreRollSrc`).** The aim-based limb transfer takes each
+bone's roll from the body-frame rebase (chest delta for arms). With big
+torso pitches — a deep jump crouch — the chest delta projects onto the
+forearm axis and the forearm *spins in place* (measured: up to 45°/frame of
+twist with <5°/frame of direction change), taking the fist with it. Clips
+with `foreRollSrc: true` (Kimodo bakes it) rebuild the forearm from the
+source forearm's full world delta — true mocap pronation/supination, stable
+by nature — then rotate minimally onto the aimed direction. Measured after:
+character forearm twist matches the source exactly (mean ~2°/frame).
+
 **Wrist articulation gain (`handFollow`).** Even with correct anchors and
 axes, raw mocap wrist channels read poorly on game hands: every twitch,
 roll, and stylistic flex of the performer shows on a fingerless fist mesh as
