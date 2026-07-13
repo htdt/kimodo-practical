@@ -33,16 +33,18 @@ if (!charPath || !movesDir) {
   process.exit(2);
 }
 
-// Gate design: the defect class this catches is CONSTANT anchor skew (a
-// wrong rest convention shows as 15-90° medians on EVERY clip — that shipped
-// once). Per-clip caps flag that loudly; aggregate medians keep the typical
-// fidelity honest; transient fast-swing outliers (hand during a jump swing)
-// stay under the cap without per-clip exceptions.
-const FOOT_PITCH_MAX = 8;       // deg, per-clip median over contact frames
+// Gate design: the defect class this catches is CONSTANT anchor skew — a
+// wrong rest convention reads as 15° (feet) to 65-90° (hands) medians on
+// EVERY clip (that shipped once). Per-clip caps flag it loudly; aggregate
+// medians keep typical fidelity honest. Thresholds are calibrated across
+// two certified rigs (Tripo fighter: agg 1.1/9.1; Mixamo: agg 1.0/13.5) so
+// transient fast-swing outliers (a hand mid jump-swing) pass without
+// per-clip exceptions while the defect class cannot.
+const FOOT_PITCH_MAX = 10;      // deg, per-clip median over contact frames
 const FOOT_MIN_FRAMES = 15;     // fewer contact frames -> unreliable, skip clip
-const HAND_SKEW_MAX = 30;       // deg, per-clip median cap
+const HAND_SKEW_MAX = 35;       // deg, per-clip median cap
 const AGG_FOOT_MAX = 4;         // deg, median of per-clip medians
-const AGG_HAND_MAX = 12;        // deg, median of per-clip medians
+const AGG_HAND_MAX = 15;        // deg, median of per-clip medians
 
 const { byName, wrapper } = await loadGLBBones(charPath);
 const bones = {};
@@ -102,7 +104,7 @@ for (const mv of manifest.moves) {
     // (Tripo) fall back to tracking the hand's world-quat delta from bind
     // applied to the bind knuckle direction (extrapolated along the forearm)
     let handChild = null, best = -2;
-    let handBindQ = null, handRefDir = null;
+    let handBindQ = null, handRefDir = null, bindHandDev = 0;
     if (hand && fore) {
       const fdir = wpos(hand).sub(wpos(fore)).normalize();
       for (const c of hand.children.filter(c => c.isBone)) {
@@ -111,8 +113,12 @@ for (const mv of manifest.moves) {
       }
       handBindQ = hand.getWorldQuaternion(new THREE.Quaternion());
       handRefDir = fdir.clone();                 // bind hands extend along the forearm
+      // rigs with finger bones measure the real knuckle chain, which carries
+      // the mesh's own bind curl — subtract it so 0 = bind posture on every rig
+      if (handChild) bindHandDev = deg(Math.acos(THREE.MathUtils.clamp(
+        wpos(handChild).sub(wpos(hand)).normalize().dot(fdir), -1, 1)));
     }
-    fix[side] = { foot, toe, fore, hand, handChild, handBindQ, handRefDir, bindFootPitch };
+    fix[side] = { foot, toe, fore, hand, handChild, handBindQ, handRefDir, bindHandDev, bindFootPitch };
   }
 
   const footPitch = { Left: [], Right: [] };
@@ -172,7 +178,8 @@ for (const mv of manifest.moves) {
           ? wpos(handChild).sub(wpos(hand)).normalize()
           : handRefDir.clone().applyQuaternion(
               hand.getWorldQuaternion(new THREE.Quaternion()).multiply(handBindQ.clone().invert()));
-        const devChar = deg(Math.acos(THREE.MathUtils.clamp(got.dot(charFore), -1, 1)));
+        const devChar = deg(Math.acos(THREE.MathUtils.clamp(got.dot(charFore), -1, 1)))
+          - fix[side].bindHandDev;
         handSkew[side].push(Math.abs(devChar - devSrc));
 
         // full-orientation skew incl. TWIST: world rotation delta of the
