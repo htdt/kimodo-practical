@@ -18,46 +18,66 @@ import json
 import os
 import shutil
 
-from huggingface_hub import snapshot_download
-
 TED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "text_encoders")
 BASE_DIR = os.path.join(TED, "llama3-8b-instruct-base")
 MNTP_DIR = os.path.join(TED, "McGill-NLP", "LLM2Vec-Meta-Llama-3-8B-Instruct-mntp")
 SUP_DIR = os.path.join(TED, "McGill-NLP", "LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised")
 
-base_snap = snapshot_download("NousResearch/Meta-Llama-3-8B-Instruct", local_files_only=True)
-mntp_snap = snapshot_download("McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp", local_files_only=True)
-sup_snap = snapshot_download("McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised", local_files_only=True)
 
-for d in (BASE_DIR, MNTP_DIR, SUP_DIR):
-    shutil.rmtree(d, ignore_errors=True)
-    os.makedirs(d)
+def main():
+    from huggingface_hub import snapshot_download
 
-# base: symlink everything, then write a patched config.json
-for f in os.listdir(base_snap):
-    if f.startswith(".") or f == "original":
-        continue
-    os.symlink(os.path.realpath(os.path.join(base_snap, f)), os.path.join(BASE_DIR, f))
-cfg = json.load(open(os.path.join(base_snap, "config.json")))
-cfg["_name_or_path"] = "meta-llama/Meta-Llama-3-8B-Instruct"
-os.remove(os.path.join(BASE_DIR, "config.json"))
-json.dump(cfg, open(os.path.join(BASE_DIR, "config.json"), "w"), indent=1)
+    base_snap = snapshot_download("NousResearch/Meta-Llama-3-8B-Instruct")
+    mntp_snap = snapshot_download("McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp")
+    sup_snap = snapshot_download("McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised")
 
-# adapters: symlink files, patch adapter_config to point at the local base
-for snap, dst in ((mntp_snap, MNTP_DIR), (sup_snap, SUP_DIR)):
-    for f in os.listdir(snap):
-        if f.startswith("."):
+    required = [
+        (base_snap, "config.json"),
+        (mntp_snap, "adapter_config.json"),
+        (mntp_snap, "config.json"),
+        (sup_snap, "adapter_config.json"),
+    ]
+    missing = [f"{directory}/{name}" for directory, name in required
+               if not os.path.isfile(os.path.join(directory, name))]
+    if missing:
+        raise RuntimeError("downloaded encoder snapshots are incomplete: " + ", ".join(missing))
+
+    for d in (BASE_DIR, MNTP_DIR, SUP_DIR):
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
+
+    # base: symlink everything, then write a patched config.json
+    for name in os.listdir(base_snap):
+        if name.startswith(".") or name == "original":
             continue
-        os.symlink(os.path.realpath(os.path.join(snap, f)), os.path.join(dst, f))
-    ac_path = os.path.join(dst, "adapter_config.json")
-    ac = json.load(open(ac_path))
-    ac["base_model_name_or_path"] = BASE_DIR
-    os.remove(ac_path)
-    json.dump(ac, open(ac_path, "w"), indent=1)
+        os.symlink(os.path.realpath(os.path.join(base_snap, name)), os.path.join(BASE_DIR, name))
+    with open(os.path.join(base_snap, "config.json")) as fp:
+        cfg = json.load(fp)
+    cfg["_name_or_path"] = "meta-llama/Meta-Llama-3-8B-Instruct"
+    os.remove(os.path.join(BASE_DIR, "config.json"))
+    with open(os.path.join(BASE_DIR, "config.json"), "w") as fp:
+        json.dump(cfg, fp, indent=1)
 
-# the MNTP repo also carries a config.json copied from the gated base; keep it
-# (it is what AutoConfig/AutoTokenizer read) — but verify it exists
-assert os.path.exists(os.path.join(MNTP_DIR, "config.json"))
-print("TEXT_ENCODERS_DIR =", TED)
-print("run kimodo with:")
-print(f"  TEXT_ENCODERS_DIR={TED} TEXT_ENCODER_DEVICE=cpu ...")
+    # adapters: symlink files, patch adapter_config to point at the local base
+    for snap, dst in ((mntp_snap, MNTP_DIR), (sup_snap, SUP_DIR)):
+        for name in os.listdir(snap):
+            if name.startswith("."):
+                continue
+            os.symlink(os.path.realpath(os.path.join(snap, name)), os.path.join(dst, name))
+        ac_path = os.path.join(dst, "adapter_config.json")
+        with open(ac_path) as fp:
+            ac = json.load(fp)
+        ac["base_model_name_or_path"] = BASE_DIR
+        os.remove(ac_path)
+        with open(ac_path, "w") as fp:
+            json.dump(ac, fp, indent=1)
+
+    # the MNTP repo also carries a config.json copied from the gated base; keep it
+    # (it is what AutoConfig/AutoTokenizer read)
+    print("TEXT_ENCODERS_DIR =", TED)
+    print("run kimodo with:")
+    print(f"  TEXT_ENCODERS_DIR={TED} TEXT_ENCODER_DEVICE=cpu ...")
+
+
+if __name__ == "__main__":
+    main()

@@ -102,8 +102,8 @@ for (let k = steps - 1; k >= 1; k--) rt.applyFrame((f - k + N) % N);
 rt.applyFrame(f);
 ```
 
-Also reset the guard on every clip switch (`rt._lastF = null;
-rt._contPrev = {}`) so it never bridges two different clips.
+Also reset the guard on every clip switch (`rt.resetContinuity()`) so it never
+bridges two different clips.
 
 ## 5. State machine over the clip set
 
@@ -123,10 +123,9 @@ States = clip names. Three shapes cover everything:
 
 **Crossfade** on every state change: snapshot all bone local quaternions +
 hips position, then for ~5 frames blend snapshot → newly-applied pose with
-smoothstep (`slerpQuaternions`). Because every clip bookends in the same
-pose (BAKE.md rule — whatever contact pose fits the game), ~5 frames is
-enough *everywhere* — walks cut mid-stride, hits interrupt attacks, all
-covered by one mechanism.
+smoothstep (`slerpQuaternions`). Bookended one-shots meet on the shared contact
+pose; loops and reactions may still be interrupted mid-motion, and the same
+short blend masks that residual pose difference without per-transition rules.
 
 ## 6. Gameplay from frame data — no hand-authored numbers
 
@@ -215,7 +214,7 @@ to engine-native animation assets (glTF animations → `AnimationPlayer` /
 `AnimationClip` / `AnimationGroup`) instead of retargeting at runtime, keep
 the identical entity/state/gameplay layers, and let the engine's animation
 system do the crossfades (e.g. an `AnimationTree` crossfade replaces §5's
-snapshot blend — same ~5-frame duration, same shared-bookend assumption).
+snapshot blend with the same short duration).
 Frame-data JSON and the derived-reach formula port unchanged. The runtime
 cost is identical to hand-authored animation — that is the point of the
 design.
@@ -228,11 +227,13 @@ node prebake.mjs character.glb --manifest baked/manifest.json --out character_an
 ```
 
 It runs the certified retargeter offline over every clip in the manifest
-(`inPlace: true`, continuity guard armed, sequential frames) and writes the
-same GLB with one glTF animation per move (per-joint local rotations + hips
-local translation), plus a `rootmotion.json` with each clip's absolute pelvis
-X/Z per frame in character-scaled meters, hip height, loop flag, and frame
-data — everything the entity layer needs to integrate root motion exactly as
-in §3. `--ylift` applies §3's per-clip vertical amplification at bake time.
+(`inPlace: true`, continuity guard armed, sequential frames) and writes a
+new GLB whose animations are one glTF animation per move
+(per-joint local rotations + hips local translation), plus a `rootmotion.json`
+with each clip's pelvis X/Z displacement from source rest in character-scaled
+meters, the actual baked character hip
+height (including `--ylift`), loop flag, and frame data — everything the
+entity layer needs to integrate root motion exactly as in §3. `--ylift`
+applies §3's per-clip vertical amplification at bake time.
 Field-validated with Babylon's glTF loader and `AnimationGroup` weight
 blending, used unchanged.

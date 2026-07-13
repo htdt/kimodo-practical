@@ -5,7 +5,7 @@ import * as THREE from 'three';
 // Resolves a skeleton's bones to canonical roles (Hips, Spine chain, Neck, Head,
 // L/R Shoulder/Arm/ForeArm/Hand, L/R UpLeg/Leg/Foot/ToeBase) by name patterns
 // covering Mixamo (with/without "mixamorig:"/"mixamorig_" prefix), Tripo3D's rig
-// specs, VRM/UE-style names — with a topology fallback: if names don't match,
+// specs, VRM/UE-style names — with a topology fallback: if names are opaque,
 // classify by hierarchy shape (hips = lowest common ancestor of two leg chains
 // and a spine chain, etc.).
 //
@@ -68,6 +68,9 @@ function classify(name) {
   for (const [role, sided, regs] of ROLE_PATTERNS) {
     for (const re of regs) {
       if (re.test(flat)) {
+        // A side-qualified name cannot be a centerline role. In particular,
+        // LeftHip/RightHip are upper legs, not competing candidates for Hips.
+        if (!sided && side) continue;
         if (sided && !side) {
           // "hip" without a side is not a leg; "arm"/"hand" without side ambiguous — skip
           return null;
@@ -90,7 +93,10 @@ const subtreeSize = (b) => { let n = 0; b.traverse(o => { if (o.isBone) n++; });
 // bones: array of THREE.Bone (any order). Returns:
 // { map: {canonicalRole: boneName}, spineChain: [boneName bottom→top], ok, missing }
 export function resolveRig(bones) {
+  if (!Array.isArray(bones) || !bones.length) throw new Error('rigmap: no bones provided');
+  if (bones.some(b => !b?.isBone || !b.name)) throw new Error('rigmap: every bone must be named');
   const byName = new Map(bones.map(b => [b.name, b]));
+  if (byName.size !== bones.length) throw new Error('rigmap: bone names must be unique');
   const map = {};
 
   for (const b of bones) {
@@ -170,7 +176,7 @@ export function resolveRig(bones) {
     }
   }
 
-  // ---- topology fallback for unresolved limb roles (works with arbitrary names)
+  // ---- topology fallback for unresolved limb roles (works with opaque names)
   const missing = CANON.filter(r => !(r in map) && r !== 'LeftToeBase' && r !== 'RightToeBase'
     && r !== 'Neck' && r !== 'LeftShoulder' && r !== 'RightShoulder' && r !== 'Spine');
   if (hips && missing.length) topoFallback(bones, byName, map, spineChain);
@@ -281,7 +287,16 @@ function assignArm(root, side, map) {
   const chain = chainOf(root);
   const roles3 = [side + 'Arm', side + 'ForeArm', side + 'Hand'];
   const roles4 = [side + 'Shoulder', ...roles3];
-  const roles = chain.length >= 4 ? roles4 : roles3;
+  // A fourth node is often a finger, not proof that the first node is a
+  // clavicle. A real clavicle segment is distinctly shorter than the upper
+  // arm that follows it; use that geometry to decide whether to shift roles.
+  let hasShoulder = false;
+  if (chain.length >= 4) {
+    const first = wx(chain[0]).distanceTo(wx(chain[1]));
+    const second = wx(chain[1]).distanceTo(wx(chain[2]));
+    hasShoulder = second > 1e-6 && first < second * 0.75;
+  }
+  const roles = hasShoulder ? roles4 : roles3;
   for (let i = 0; i < roles.length && i < chain.length; i++) {
     if (!(roles[i] in map)) map[roles[i]] = chain[i].name;
   }

@@ -1,58 +1,86 @@
-"""validate_axes — empirically pin Kimodo's axis/heading conventions.
+"""Validate Kimodo axes on a generated forward-walk NPZ.
 
-Run on a generated 'walks forward' NPZ: travel direction must ≈ facing.
-Prints heading[0], net root travel, and the hip-line-derived forward, and
-checks the assumptions kimogen.py hardcodes:
-  - Y-up (vertical variance lives in Y)
-  - heading [cos t, sin t], facing dir = (sin t, 0, cos t)  [t=0 -> +Z]
-  - ground at y=0 (foot joints touch ~0)
+Checks the conventions consumed by kimogen.py: Y-up with feet near y=0,
+hip-line forward aligned to travel, and heading stored as [cos(t), sin(t)]
+with facing (sin(t), 0, cos(t)). Exits nonzero on a mismatch.
 """
-import sys
+import argparse
+import json
 
 import numpy as np
 
-npz = sys.argv[1] if len(sys.argv) > 1 else "../kimodo_out/smoke_walk.npz"
-z = np.load(npz)
-print("keys:", list(z.keys()))
-pj = z["posed_joints"]
-print("posed_joints", pj.shape)
 
-from kimodo.skeleton.definitions import SOMASkeleton30, SOMASkeleton77
-sk = SOMASkeleton77() if pj.shape[1] == 77 else SOMASkeleton30()
-print("skeleton:", sk.name)
-names = sk.bone_order_names
-idx = {n: i for i, n in enumerate(names)}
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("npz", help="raw Kimodo forward-walk NPZ")
+    args = ap.parse_args()
 
-root = pj[:, sk.root_idx]
-print(f"root y range: {root[:,1].min():.3f}..{root[:,1].max():.3f} (expect ~0.9 standing)")
-feet = pj[:, [idx['LeftToeBase'], idx['RightToeBase']], 1]
-print(f"toe min y: {feet.min():.3f} (expect ~0.0 = ground)")
+    z = np.load(args.npz)
+    if "posed_joints" not in z:
+        ap.error("NPZ has no posed_joints")
+    if "global_root_heading" not in z:
+        ap.error("raw Kimodo NPZ has no global_root_heading")
+    joints = z["posed_joints"]
+    if (joints.ndim != 3 or joints.shape[-1] != 3
+            or joints.shape[0] < 2 or joints.shape[1] not in (30, 77)):
+        ap.error(f"posed_joints must have shape [T,30|77,3], got {joints.shape}")
+    if not np.isfinite(joints).all():
+        print(json.dumps({"ok": False, "metrics": {},
+                          "failures": ["motion contains non-finite values"]}, indent=2))
+        raise SystemExit(1)
 
-travel = root[-1] - root[0]
-print(f"net travel: x={travel[0]:+.3f} y={travel[1]:+.3f} z={travel[2]:+.3f}")
+    from kimodo.skeleton.definitions import SOMASkeleton30, SOMASkeleton77
+    skeleton = SOMASkeleton77() if joints.shape[1] == 77 else SOMASkeleton30()
+    idx = {name: i for i, name in enumerate(skeleton.bone_order_names)}
+    root = joints[:, skeleton.root_idx]
 
-t0 = None
-if "global_root_heading" in z:
-    h = z["global_root_heading"]
-    print(f"heading[0]: {h[0]} heading[-1]: {h[-1]}")
-    t0 = np.arctan2(h[0][1], h[0][0])
-    print(f"if [cos,sin]: t0={np.degrees(t0):.1f}deg -> facing (sin,cos)=({np.sin(t0):+.2f},{np.cos(t0):+.2f})")
-else:
-    print("(no global_root_heading key in this npz)")
+    right = joints[0, idx["RightLeg"]] - joints[0, idx["LeftLeg"]]
+    forward = np.cross(np.array([0.0, 1.0, 0.0]), right)
+    forward[1] = 0.0
+    forward /= np.linalg.norm(forward) + 1e-12
+    travel = root[-1] - root[0]
+    travel[1] = 0.0
+    travel_len = float(np.linalg.norm(travel))
+    travel_dir = travel / (travel_len + 1e-12)
 
-# geometric forward at frame 0 from the hip line (right hip -> left hip x up)
-r_hip, l_hip = pj[0, idx['RightLeg']], pj[0, idx['LeftLeg']]
-right = r_hip - l_hip
-up = np.array([0.0, 1.0, 0.0])
-fwd_a = np.cross(right, up); fwd_a /= np.linalg.norm(fwd_a)
-fwd_b = -fwd_a
-tv = travel * np.array([1.0, 0.0, 1.0])
-tvn = tv / (np.linalg.norm(tv) + 1e-9)
-print(f"hip-line fwd candidate A (cross(right,up)): {fwd_a.round(2)} dot(travel)={fwd_a@tvn:+.2f}")
-print(f"hip-line fwd candidate B (-A):              {fwd_b.round(2)} dot(travel)={fwd_b@tvn:+.2f}")
-print("(walk-forward clip: the candidate with dot ~ +1 is the true forward;")
-print(" compare with the heading-vector interpretations below)")
-if t0 is not None:
-    for lbl, v in [("(sin t0, cos t0)", np.array([np.sin(t0), 0, np.cos(t0)])),
-                   ("(cos t0, sin t0)", np.array([np.cos(t0), 0, np.sin(t0)]))]:
-        print(f"heading as {lbl}: {v.round(2)} dot(travel)={v@tvn:+.2f}")
+    toe_y = joints[:, [idx["LeftToeBase"], idx["RightToeBase"]], 1]
+    metrics = {
+        "frames": int(len(joints)),
+        "joints": int(joints.shape[1]),
+        "rootY": [round(float(root[:, 1].min()), 4), round(float(root[:, 1].max()), 4)],
+        "toeMinY": round(float(toe_y.min()), 4),
+        "travel": [round(float(x), 4) for x in travel],
+        "hipForwardDotTravel": round(float(forward @ travel_dir), 4),
+    }
+    failures = []
+    if abs(metrics["toeMinY"]) > 0.08:
+        failures.append(f"ground is not near y=0 (toe min {metrics['toeMinY']} m)")
+    if travel_len < 0.1:
+        failures.append(f"forward-walk travel is too small ({travel_len:.3f} m)")
+    if metrics["hipForwardDotTravel"] < 0.8:
+        failures.append("hip-line forward does not align with travel")
+
+    heading = z["global_root_heading"]
+    if heading.ndim != 2 or heading.shape != (len(joints), 2):
+        failures.append(f"global_root_heading has invalid shape {heading.shape}")
+    elif not np.isfinite(heading).all():
+        failures.append("global_root_heading contains non-finite values")
+    else:
+        heading_norm = float(np.linalg.norm(heading[0]))
+        metrics["headingNorm"] = round(heading_norm, 4)
+        if not 0.95 <= heading_norm <= 1.05:
+            failures.append(f"heading [cos(t), sin(t)] is not unit length ({heading_norm:.3f})")
+        angle = np.arctan2(heading[0, 1], heading[0, 0])
+        heading_dir = np.array([np.sin(angle), 0.0, np.cos(angle)])
+        metrics["headingDotTravel"] = round(float(heading_dir @ travel_dir), 4)
+        if metrics["headingDotTravel"] < 0.8:
+            failures.append("[cos(t), sin(t)] heading does not align with travel")
+
+    print(json.dumps({"ok": not failures, "metrics": metrics, "failures": failures}, indent=2))
+    z.close()
+    if failures:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

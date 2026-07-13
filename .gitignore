@@ -3,3 +3,5 @@ package-lock.json
 *.retarget_certificate.json
 *.glb
 __pycache__/
+kimodo/out/
+text_encoders/

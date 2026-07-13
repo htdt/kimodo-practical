@@ -87,10 +87,12 @@ TEXT_ENCODER_DEVICE=cpu kimenv/bin/kimodo_gen "A person walks forward." \
 
 The output NPZ contains `posed_joints [T,77,3]`, `global_rot_mats
 [T,77,3,3]`, `local_rot_mats`, `root_positions`, `global_root_heading
-[T,2]`, `foot_contacts [T,4]` at 30 fps.
+[T,2]`, and (after SOMA-77 expansion) `foot_contacts [T,6]` at 30 fps. The
+generation gate also accepts Kimodo's compact four-contact layout.
 
 **Conventions** (verified empirically — `kimodo/validate_axes.py` re-checks
-them on any NPZ): Y-up, ground at y=0, meters, root = `Hips` at ~0.95 m
+them on a generated forward-walk NPZ): Y-up, ground at y=0, meters, root =
+`Hips` at ~0.95 m
 standing; heading angle t stored as `[cos t, sin t]` with facing direction
 `(sin t, 0, cos t)` — heading 0 faces **+Z**. Note this is already
 three.js-style axes: no basis conversion at bake time, only a yaw
@@ -148,7 +150,7 @@ The Stage 2 implementation (contract and workflow: BAKE.md):
 | `kimogen.py` | move-set generation: prompt + optional stance-bookend fullbody constraints → best-of-8 → QA gates → NPZ + gate/frame-data JSON per move |
 | `moveset_mk.json` | the validated 17-move Mortal Kombat spec (prompts, travel intents, apex gates, bookend flags) |
 | `bake_kimodo.py` | canonicalized NPZ → browser motion JSON (+`srcMap`) + manifest |
-| `validate_axes.py` | prints/verifies the axis & heading conventions on any output NPZ |
+| `validate_axes.py` | validates the axis & heading conventions on a forward-walk NPZ |
 | `setup_text_encoder.py` | builds the local mirror `TEXT_ENCODERS_DIR` (§1a) |
 
 ```bash
@@ -189,9 +191,9 @@ canonicalized clip. Everything in ALIGN.md (certification) and INTEGRATE.md
 **End-effector fidelity gates** — `qa_endeffectors.mjs <char.glb> <movesDir>
 --gate` retargets every baked clip headless and measures, on the character:
 median foot pitch vs bind on frames where the *source* foot is grounded and
-still (flat by definition; gate ≤ 8° per clip, ≥15 contact frames), and
+still (flat by definition; gate ≤ 10° per clip, ≥15 contact frames), and
 median |character wrist bend − source wrist bend| (knuckle direction vs
-forearm axis, gate ≤ 30° per clip cap / ≤ 12° aggregate). This is the gate
+forearm axis, gate ≤ 35° per clip cap / ≤ 15° aggregate). This is the gate
 that catches rest-anchor mistakes — a wrong rest convention reads as 15–90°
 medians on *every* clip, unmistakably. Wire it into the project test suite
 next to the game QA; run it for every new character × move-set pair.
@@ -199,10 +201,10 @@ next to the game QA; run it for every new character × move-set pair.
 ## 5. Known limits
 
 - ≤ 10 s per prompt; ≤ 20 constrained frames per constraint type.
-- Prompts outside the training distribution (locomotion, gestures, everyday
-  actions, object interaction, **videogame combat**, dance, stylized walks)
-  degrade fast — see the BONES-SEED prompt style for calibration; "A person
-  ..." phrasing works best.
+- The training distribution covers locomotion, gestures, everyday actions,
+  object interaction, **videogame combat**, dance, and stylized walks. Prompts
+  far outside those categories degrade fast; plain "A person ..." phrasing
+  works best.
 - The model won't reliably invent multi-phase choreography from one prompt —
   chain prompts (multi-prompt generation) or split into separate moves.
 - Post-processing (foot-skate cleanup + constraint optimization) is on by

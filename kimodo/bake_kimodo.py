@@ -12,16 +12,13 @@ No GPU needed.
 import argparse
 import json
 import os
+import re
 
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-
-ORDER = ["idle_stance", "walk_fwd", "walk_back", "jump_up", "crouch",
-         "block_high", "jab", "punch_heavy", "uppercut", "kick_front",
-         "kick_high", "kick_side", "sweep", "hit_head", "hit_heavy",
-         "knockdown", "victory"]
+SAFE_MOVE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 # canonical source roles -> somaskel77 joint names (mirror of SOMA_SRC in
 # align/retarget.js; baked into each clip JSON as data.srcMap)
@@ -38,11 +35,18 @@ SOMA_SRC = {
 
 def minrot(a, b):
     """Minimal rotation matrix taking unit vector a to unit vector b."""
-    a = a / np.linalg.norm(a)
-    b = b / np.linalg.norm(b)
-    v, c = np.cross(a, b), float(a @ b)
+    an, bn = np.linalg.norm(a), np.linalg.norm(b)
+    if not np.isfinite(an) or not np.isfinite(bn) or an < 1e-9 or bn < 1e-9:
+        raise ValueError("cannot align a zero or non-finite vector")
+    a, b = a / an, b / bn
+    v, c = np.cross(a, b), float(np.clip(a @ b, -1.0, 1.0))
     if c > 1 - 1e-9:
         return np.eye(3)
+    if c < -1 + 1e-9:
+        basis = np.eye(3)[np.argmin(np.abs(a))]
+        axis = np.cross(a, basis)
+        axis /= np.linalg.norm(axis)
+        return Rot.from_rotvec(axis * np.pi).as_matrix()
     vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
     return np.eye(3) + vx + vx @ vx / (1 + c)
 
@@ -54,14 +58,60 @@ def mats_to_xyzw(m):
     return q.reshape(*shape, 4)
 
 
+def manifest_entry(name, frames, fps, meta, spec_move):
+    """Build the runtime contract for one already-validated clip."""
+    loop = spec_move.get("loop", meta.get("loop", False))
+    return {
+        "name": name,
+        "file": f"{name}.json",
+        "frames": int(frames),
+        "fps": int(fps),
+        "loop": bool(loop),
+        "frame_data": meta.get("frame_data"),
+        "gates": {k: v for k, v in meta.get("gates", {}).items()
+                  if not isinstance(v, list)},
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in-dir", default=os.path.join(HERE, "out/moves"))
-    ap.add_argument("--web-dir", default=os.path.join(HERE, "../web/moves_kimodo"))
+    ap.add_argument("--in-dir", "--in", default=os.path.join(HERE, "out/moves"))
+    ap.add_argument("--web-dir", "--web", default=os.path.join(HERE, "../web/moves_kimodo"))
+    ap.add_argument("--spec", default=os.path.join(HERE, "moveset_mk.json"),
+                    help="move spec; defines output order and loop flags")
     ap.add_argument("--all", action="store_true",
-                    help="bake every npz in in-dir instead of the MK ORDER list")
+                    help="bake every NPZ in in-dir instead of the spec's move list")
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="allow a partial spec bake (normally every spec move is required)")
+    ap.add_argument("--allow-ungated", action="store_true",
+                    help="allow NPZs without a generation report (for imported examples only)")
     a = ap.parse_args()
     os.makedirs(a.web_dir, exist_ok=True)
+
+    with open(a.spec) as fp:
+        spec = json.load(fp)
+    if not isinstance(spec, dict):
+        ap.error("spec must be a JSON object")
+    spec_moves = spec.get("moves", [])
+    if not isinstance(spec_moves, list):
+        ap.error("spec 'moves' must be an array")
+    if not a.all and not spec_moves:
+        ap.error("spec 'moves' must not be empty")
+    if any(not isinstance(mv, dict) for mv in spec_moves):
+        ap.error("every spec move must be an object")
+    spec_by_name = {mv.get("name"): mv for mv in spec_moves}
+    if (any(not isinstance(name, str) or not SAFE_MOVE_NAME.fullmatch(name)
+            for name in spec_by_name)
+            or len(spec_by_name) != len(spec_moves)):
+        ap.error("spec move names must be safe and unique")
+    if any("loop" in mv and not isinstance(mv["loop"], bool) for mv in spec_moves):
+        ap.error("spec loop flags must be boolean")
+    spec_fps = spec.get("fps")
+    if (spec_fps is not None
+            and (isinstance(spec_fps, bool) or not isinstance(spec_fps, (int, float))
+                 or not np.isfinite(spec_fps) or spec_fps <= 0
+                 or abs(spec_fps - round(spec_fps)) > 1e-9)):
+        ap.error("spec fps must be a positive integer")
 
     from kimodo.skeleton.definitions import SOMASkeleton30, SOMASkeleton77
 
@@ -125,24 +175,114 @@ def main():
 
     packs = {}
 
-    order = ORDER if not a.all else sorted(
-        f[:-4] for f in os.listdir(a.in_dir) if f.endswith(".npz"))
+    order = ([mv["name"] for mv in spec_moves] if not a.all else sorted(
+        f[:-4] for f in os.listdir(a.in_dir) if f.endswith(".npz")))
+    if any(not SAFE_MOVE_NAME.fullmatch(name) for name in order):
+        raise SystemExit("[reject] input NPZ names must contain only letters, numbers, '_' and '-'")
     manifest = []
     for name in order:
         src = os.path.join(a.in_dir, f"{name}.npz")
+        meta_path = os.path.join(a.in_dir, f"{name}.json")
         if not os.path.exists(src):
-            print(f"[skip] {name} (no npz)")
-            continue
+            if os.path.exists(meta_path):
+                with open(meta_path) as fp:
+                    failed_meta = json.load(fp)
+                if failed_meta.get("accepted", failed_meta.get("gates", {}).get("pass")) is not True:
+                    raise SystemExit(f"[reject] {name}: generation gates did not pass")
+            if a.all or a.allow_missing:
+                print(f"[skip] {name} (no npz)")
+                continue
+            raise SystemExit(f"[reject] {name}: expected NPZ is missing (use --allow-missing for a partial bake)")
+        if os.path.exists(meta_path):
+            with open(meta_path) as fp:
+                meta = json.load(fp)
+        else:
+            meta = {}
+        if not isinstance(meta, dict) or not isinstance(meta.get("gates", {}), dict):
+            raise SystemExit(f"[reject] {name}: generation report must be a JSON object")
+        if meta and meta.get("name", name) != name:
+            raise SystemExit(f"[reject] {name}: generation report belongs to {meta.get('name')}")
+        reported = meta.get("accepted")
+        gated = meta.get("gates", {}).get("pass")
+        if reported is not None and not isinstance(reported, bool):
+            raise SystemExit(f"[reject] {name}: generation report has a malformed accepted flag")
+        if gated is not None and not isinstance(gated, bool):
+            raise SystemExit(f"[reject] {name}: generation report has a malformed pass gate")
+        if reported is not None and gated is not None and reported != gated:
+            raise SystemExit(f"[reject] {name}: generation report acceptance flags disagree")
+        accepted = reported if reported is not None else gated
+        if accepted is False:
+            raise SystemExit(f"[reject] {name}: generation gates did not pass")
+        if not a.allow_ungated and accepted is not True:
+            reason = "missing generation report" if not meta else "generation gates did not pass"
+            raise SystemExit(f"[reject] {name}: {reason}; use --allow-ungated only for imported examples")
+        if "loop" in meta and not isinstance(meta["loop"], bool):
+            raise SystemExit(f"[reject] {name}: report loop flag must be boolean")
+
         z = np.load(src)
+        required = {"posed_joints", "global_rot_mats", "fps"}
+        missing = required - set(z.files)
+        if missing:
+            raise SystemExit(f"[reject] {name}: NPZ missing {', '.join(sorted(missing))}")
         pj, grm = z["posed_joints"], z["global_rot_mats"]
+        if pj.ndim != 3 or pj.shape[-1] != 3:
+            raise SystemExit(f"[reject] {name}: posed_joints must have shape [T,J,3]")
         F, J = pj.shape[0], pj.shape[1]
+        if J not in (30, 77):
+            raise SystemExit(f"[reject] {name}: expected a 30- or 77-joint SOMA clip, got {J}")
+        if F < 2 or grm.shape[:2] != (F, J) or grm.shape[-2:] != (3, 3):
+            raise SystemExit(f"[reject] {name}: inconsistent motion shapes")
+        if not np.isfinite(pj).all() or not np.isfinite(grm).all():
+            raise SystemExit(f"[reject] {name}: motion contains non-finite values")
+        fps_value = np.asarray(z["fps"])
+        if fps_value.size != 1:
+            raise SystemExit(f"[reject] {name}: fps must be a scalar")
+        fps_float = float(fps_value.reshape(-1)[0])
+        if (not np.isfinite(fps_float) or fps_float <= 0
+                or abs(fps_float - round(fps_float)) > 1e-9):
+            raise SystemExit(f"[reject] {name}: fps must be a positive integer")
+        fps = int(round(fps_float))
+        if spec_fps is not None and fps != int(round(spec_fps)):
+            raise SystemExit(f"[reject] {name}: clip fps={fps} does not match spec fps={spec_fps}")
+        eye = np.eye(3)
+        orth_err = float(np.max(np.abs(np.swapaxes(grm, -1, -2) @ grm - eye)))
+        det_err = float(np.max(np.abs(np.linalg.det(grm) - 1.0)))
+        if orth_err > 5e-3 or det_err > 5e-3:
+            raise SystemExit(
+                f"[reject] {name}: invalid rotation matrices "
+                f"(orthogonality error={orth_err:.4g}, determinant error={det_err:.4g})")
+        if ("frames" in meta and (isinstance(meta["frames"], bool)
+                                  or not isinstance(meta["frames"], int))):
+            raise SystemExit(f"[reject] {name}: report frames must be an integer")
+        if "frames" in meta and meta["frames"] != F:
+            raise SystemExit(f"[reject] {name}: report frames={meta['frames']} but NPZ has {F}")
+        if ("fps" in meta and (isinstance(meta["fps"], bool)
+                               or not isinstance(meta["fps"], int))):
+            raise SystemExit(f"[reject] {name}: report fps must be an integer")
+        if "fps" in meta and meta["fps"] != fps:
+            raise SystemExit(f"[reject] {name}: report fps={meta['fps']} but NPZ has {fps}")
+        spec_move = spec_by_name.get(name, {})
+        if ("loop" in meta and "loop" in spec_move
+                and meta["loop"] != spec_move["loop"]):
+            raise SystemExit(f"[reject] {name}: report/spec loop flags disagree; regenerate the clip")
+        z.close()
         if J not in packs:
             packs[J] = skel_pack(J)
         names, parents, rest, rest_quat = packs[J]
+        ni = {n: i for i, n in enumerate(names)}
+        root_xz = pj[0, ni["Hips"], [0, 2]]
+        hip_right = pj[0, ni["RightLeg"]] - pj[0, ni["LeftLeg"]]
+        facing = np.cross(np.array([0.0, 1.0, 0.0]), hip_right)
+        facing[1] = 0.0
+        facing /= np.linalg.norm(facing) + 1e-12
+        if np.linalg.norm(root_xz) > 1e-3 or facing[0] < 0.999:
+            raise SystemExit(
+                f"[reject] {name}: clip is not canonical (frame-0 root XZ={root_xz.tolist()}, "
+                f"facing={facing.tolist()}); regenerate it with the current kimogen.py")
         quat = mats_to_xyzw(grm)
 
         out = {
-            "fps": int(z["fps"]), "numFrames": F, "mode": name,
+            "fps": fps, "numFrames": F, "mode": name,
             "names": names, "parents": parents,
             "pos": np.round(pj, 4).tolist(),
             "rest": np.round(rest, 4).tolist(),
@@ -160,18 +300,17 @@ def main():
             "foreRollSrc": True,
         }
         with open(os.path.join(a.web_dir, f"{name}.json"), "w") as fp:
-            json.dump(out, fp)
+            json.dump(out, fp, allow_nan=False)
 
-        meta_path = os.path.join(a.in_dir, f"{name}.json")
-        meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {}
-        manifest.append({"name": name, "file": f"{name}.json", "frames": F,
-                         "frame_data": meta.get("frame_data"),
-                         "gates": {k: v for k, v in meta.get("gates", {}).items()
-                                   if not isinstance(v, list)}})
+        manifest.append(manifest_entry(
+            name, F, fps, meta, spec_move))
         print(f"[bake] {name}: {F} frames")
 
+    if not manifest:
+        raise SystemExit("[reject] no clips were found to bake")
     with open(os.path.join(a.web_dir, "manifest.json"), "w") as fp:
-        json.dump({"moves": manifest, "source": "kimodo"}, fp, indent=1)
+        json.dump({"moves": manifest, "source": "kimodo"}, fp, indent=1,
+                  allow_nan=False)
     print(f"[bake] manifest: {len(manifest)} moves -> {a.web_dir}/manifest.json")
 
 

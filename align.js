@@ -21,8 +21,6 @@ import { Retargeter, buildBoneOrder, SOMA_SRC } from './retarget.js';
 //  - absolute gates (round-trip is necessary but NOT sufficient): bone-length
 //    stretch, foot flatness vs the source's own foot tilt, per-bone twist
 //    limits, torso-capsule clearance.
-//  - calibrateHandClamp: rest-pose wrist-bias measurement -> per-character
-//    clamp tightening (the one continuous parameter the retargeter exposes).
 //  - certifyRig: run the battery, emit a retarget_certificate-style report.
 
 // canonical source roles measured by the inverse map / round trip
@@ -61,22 +59,19 @@ export const TWIST_LIMITS = {
 
 const V = (a) => new THREE.Vector3(a[0], a[1], a[2]);
 
-function frameQ(origin, upPt, rA, rB) {
-  const up = upPt.clone().sub(origin).normalize();
-  const r0 = rA.clone().sub(rB).normalize();
-  const fwd = new THREE.Vector3().crossVectors(r0, up).normalize();
-  const right = new THREE.Vector3().crossVectors(up, fwd).normalize();
-  return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, fwd));
-}
-
 // ---------------------------------------------------------------- rig helpers
 
 // resolve a rig and package everything the Retargeter needs
 export function rigFromBones(allBones) {
+  if (!Array.isArray(allBones) || !allBones.length) throw new Error('align: no bones provided');
   const rig = resolveRig(allBones);
-  if (!rig.map.Hips) throw new Error('align: cannot resolve Hips; missing=' + rig.missing);
-  const byName = {};
-  allBones.forEach(b => { byName[b.name] = b; });
+  if (!rig.ok) throw new Error('align: incomplete humanoid rig; missing=' + rig.missing.join(','));
+  const byName = Object.create(null);
+  allBones.forEach(b => {
+    if (!b.name) throw new Error('align: every bone must have a name');
+    if (Object.hasOwn(byName, b.name)) throw new Error(`align: duplicate bone name "${b.name}"`);
+    byName[b.name] = b;
+  });
   const hips = byName[rig.map.Hips];
   if (!hips.parent) {                    // retargeter needs a parent space for the root
     const g = new THREE.Group();
@@ -84,7 +79,7 @@ export function rigFromBones(allBones) {
     g.updateMatrixWorld(true);
   }
   const orderedBones = buildBoneOrder(hips);
-  const bones = {};
+  const bones = Object.create(null);
   orderedBones.forEach(b => { bones[b.name] = b; });
   // snapshot the pristine bind pose: the Retargeter reads "bind" from the bones'
   // CURRENT state at construction, and applyFrame leaves the skeleton posed — so
@@ -119,6 +114,15 @@ export function srcMapFromRig(rigMap) {
 // skeleton into frame f (e.g. glbskel's animationSampler.apply); world matrices
 // must be current when it returns. Captures world pos + quat of every bone.
 export function snapshotMotion(orderedBones, poseFrame, numFrames, fps = 30, mode = 'glb') {
+  if (!Array.isArray(orderedBones) || !orderedBones.length ||
+      orderedBones.some(b => !b?.isBone || !b.name) ||
+      new Set(orderedBones.map(b => b.name)).size !== orderedBones.length)
+    throw new Error('snapshotMotion requires non-empty, uniquely named bones');
+  if (typeof poseFrame !== 'function') throw new Error('snapshotMotion requires a poseFrame function');
+  if (!Number.isInteger(numFrames) || numFrames < 1)
+    throw new Error(`snapshotMotion numFrames must be a positive integer; got ${numFrames}`);
+  if (!Number.isFinite(fps) || fps <= 0)
+    throw new Error(`snapshotMotion fps must be positive; got ${fps}`);
   const names = orderedBones.map(b => b.name);
   const grab = () => orderedBones.map(b => {
     const p = b.getWorldPosition(new THREE.Vector3());
@@ -145,15 +149,35 @@ export function snapshotMotion(orderedBones, poseFrame, numFrames, fps = 30, mod
 // most articulated moments. Returns probe motion data (same shape as clip data,
 // so it feeds a Retargeter directly) + tags. Frame 0 is always the source REST
 // pose (the closest thing to a T-pose probe the source skeleton defines).
-export function mineProbeFrames(clips, srcMap = SOMA_SRC) {
+export function mineProbeFrames(clips, srcMap) {
+  if (!Array.isArray(clips) || !clips.length) throw new Error('mineProbeFrames requires at least one clip');
   const first = clips[0];
-  const idx = {}; first.names.forEach((n, i) => { idx[n] = i; });
-  const S = srcMap;
+  if (!Array.isArray(first.names) || !Array.isArray(first.rest) || !Array.isArray(first.pos))
+    throw new Error('probe clips require names, rest, and pos arrays');
+  const handFollow = first.handFollow ?? 1;
+  const foreRollSrc = first.foreRollSrc ?? false;
+  for (const clip of clips) {
+    if (!Array.isArray(clip.names) || !Array.isArray(clip.rest) || !Array.isArray(clip.pos) ||
+        clip.names.length !== first.names.length ||
+        clip.names.some((name, i) => name !== first.names[i]))
+      throw new Error('probe clips must use the same source joint order');
+    if ((clip.handFollow ?? 1) !== handFollow || (clip.foreRollSrc ?? false) !== foreRollSrc)
+      throw new Error('probe clips must use the same handFollow and foreRollSrc transfer settings');
+    const frames = clip.numFrames ?? clip.pos.length;
+    if (!Number.isInteger(frames) || frames < 1 || clip.pos.length !== frames)
+      throw new Error('probe clip numFrames must match its pos length');
+  }
+  const idx = Object.create(null); first.names.forEach((n, i) => { idx[n] = i; });
+  const S = srcMap ?? first.srcMap ?? SOMA_SRC;
+  for (const role of MEASURE_ROLES) {
+    if (!Object.hasOwn(idx, S[role]))
+      throw new Error(`srcMap joint for ${role} ("${S[role]}") is missing from probe clips`);
+  }
   const j = (P, role) => V(P[idx[S[role]]]);
 
   const rows = [{ tag: 'rest', pos: first.rest, quat: first.restQuat, grounded: { Left: true, Right: true } }];
   for (const clip of clips) {
-    const N = clip.numFrames;
+    const N = clip.numFrames ?? clip.pos.length;
     const restFootY = Math.min(j(clip.rest, 'LeftFoot').y, j(clip.rest, 'RightFoot').y);
     const score = {
       kickL: (P) => j(P, 'LeftFoot').y,
@@ -187,6 +211,7 @@ export function mineProbeFrames(clips, srcMap = SOMA_SRC) {
     rest: first.rest, restQuat: first.restQuat,
     pos: rows.map(r => r.pos),
     quat: hasQuat ? rows.map(r => r.quat) : undefined,
+    srcMap: S, handFollow, foreRollSrc,
     probeTags: rows.map(r => r.tag), probeGrounded: rows.map(r => r.grounded),
   };
 }
@@ -236,7 +261,7 @@ export function recoverCanonicalPose(rt) {
     LeftArm: chestDeltaSrc, RightArm: chestDeltaSrc };
   const walk = (parentRole) => {
     for (const child of CHAIN[parentRole] ?? []) {
-      if (!(S[child] in idx) || (child !== 'Chest' && !R[child])) continue;
+      if (!Object.hasOwn(idx, S[child]) || (child !== 'Chest' && !R[child])) continue;
       if (ANCHOR_DELTA[child]) {
         const off = srcRest(child).sub(srcRest(parentRole)).applyQuaternion(ANCHOR_DELTA[child]);
         out[child] = out[parentRole].clone().add(off);
@@ -263,7 +288,7 @@ export function roundTripError(rt, f) {
   const perRole = {};
   let sum = 0, n = 0, max = 0;
   for (const role of MEASURE_ROLES) {
-    if (!rec[role] || !(rt.S[role] in rt.idx)) continue;
+    if (!rec[role] || !Object.hasOwn(rt.idx, rt.S[role])) continue;
     const e = rec[role].distanceTo(V(P[rt.idx[rt.S[role]]]));
     perRole[role] = e; sum += e; n++; if (e > max) max = e;
   }
@@ -292,6 +317,12 @@ export function measureGates(rt, f, grounded) {
   // twist vs bind, about each bone's own bind axis, as a fraction of the
   // role's anatomical limit
   for (const role of LIMB_ROLES) {
+    // Kimodo clips explicitly opt into source-authored forearm roll. In that
+    // mode the target copies human mocap pronation/supination; measuring it
+    // against a target-bind heuristic can report ~180° for an ordinary guard
+    // pose and false-reject the reference character. Other limb roles, and
+    // forearms driven by the generic body-frame aim path, remain gated.
+    if (rt.foreRollSrc && role.endsWith('ForeArm')) continue;
     const name = R[role];
     if (!name || !rt.bones[name]) continue;
     const limit = TWIST_LIMITS[role.replace(/^(Left|Right)/, '')];
@@ -333,10 +364,11 @@ export function measureGates(rt, f, grounded) {
       const charTilt = upTilt(rt.animWorld[rt.bones[name].uuid], rt.bindWorldQ[name]);
       let srcTilt = 0;
       const srcJoint = rt.S[side + 'Foot'];
-      if (rt.hasQuat && srcJoint in rt.idx) {
+      if (rt.hasQuat && Object.hasOwn(rt.idx, srcJoint)) {
         const q = rt.data.quat[((f % rt.numFrames) + rt.numFrames) % rt.numFrames][rt.idx[srcJoint]];
         const q0 = rt.data.restQuat[rt.idx[srcJoint]];
-        srcTilt = upTilt(new THREE.Quaternion(...q), new THREE.Quaternion(...q0));
+        srcTilt = upTilt(new THREE.Quaternion(...q).normalize(),
+          new THREE.Quaternion(...q0).normalize());
       }
       worst = Math.max(worst ?? 0, Math.abs(charTilt - srcTilt));
 
@@ -400,91 +432,63 @@ export function checkSideConsistency(target) {
   return { ok: wrong.length === 0, wrong };
 }
 
-// ----------------------------------------------------------- hand calibration
-
-// Rest-pose wrist TWIST bias: with the source at rest, any twist of the hand
-// about its own axis (vs its bind relation to the forearm) is a systematic
-// source↔char wrist-convention offset — the "twisted wrist" family of bugs.
-// Tighten the twist clamp so bias + motion can't exceed anatomy. Swing is NOT
-// calibrated here: at source rest the arms hang while a T-pose bind sticks them
-// out, so the rest swing deviation is pose mismatch, not a convention bias.
-export function calibrateHandClamp(mk) {
-  const rt = mk({});
-  if (!rt.hasQuat) return null;
-  rt.applyFrame(0);                                   // probe frame 0 == rest
-  let twist = 0;
-  for (const role of ['LeftHand', 'RightHand']) {
-    const name = rt.R[role];
-    if (!name || !rt.bones[name] || !rt.fullqByBone[name]) continue;
-    const b = rt.bones[name];
-    const parentQ = rt.animWorld[b.parent.uuid];
-    const local = parentQ.clone().invert().multiply(rt.animWorld[b.uuid]);
-    const rel = rt.bindLocalQ[name].clone().invert().multiply(local);
-    if (rel.w < 0) rel.set(-rel.x, -rel.y, -rel.z, -rel.w);
-    const axis = rt.clampAxis[name] ?? new THREE.Vector3(0, 1, 0);
-    const r = new THREE.Vector3(rel.x, rel.y, rel.z);
-    const proj = axis.clone().multiplyScalar(r.dot(axis));
-    const tq = new THREE.Quaternion(proj.x, proj.y, proj.z, rel.w).normalize();
-    const ang = 2 * Math.acos(THREE.MathUtils.clamp(Math.abs(tq.w), -1, 1));
-    twist = Math.max(twist, THREE.MathUtils.radToDeg(ang));
-  }
-  return {
-    biasTwistDeg: twist,
-    handClampDeg: { twist: THREE.MathUtils.clamp(85 - twist, 35, 85) },
-  };
-}
-
 // -------------------------------------------------------------- certification
 
 // Run the full battery for one target rig against a source probe set.
 //  target: { rig, bones, orderedBones, hips, hipsParent } from rigFromBones()
 //  probes: mineProbeFrames() output
-//  opts:   { srcMap, gates, calibrate }
+//  opts:   { srcMap, gates, guards }
 export function certifyRig(target, probes, opts = {}) {
+  if (opts.gates !== undefined && (!opts.gates || typeof opts.gates !== 'object' || Array.isArray(opts.gates)))
+    throw new Error('certification gates must be an object');
+  for (const [name, value] of Object.entries(opts.gates ?? {})) {
+    if (!Object.hasOwn(DEFAULT_GATES, name)) throw new Error(`unknown certification gate "${name}"`);
+    if (!Number.isFinite(value) || value < 0)
+      throw new Error(`certification gate ${name} must be a non-negative number`);
+  }
   const gates = { ...DEFAULT_GATES, ...(opts.gates ?? {}) };
-  const mk = (extra) => {
-    resetBindPose(target);               // Retargeter reads bind from current state
-    return new Retargeter({
-      bones: target.bones, orderedBones: target.orderedBones,
-      hips: target.hips, hipsParent: target.hipsParent,
-      rig: target.rig, data: probes, srcMap: opts.srcMap,
-      // probes are UNRELATED poses at consecutive indices — the temporal
-      // continuity guard must not smooth across them; gates measure raw transfer
-      guards: { continuity: false, ...(opts.guards ?? {}) },
-      ...extra,
-    });
-  };
-
-  const calib = opts.calibrate === false ? null : calibrateHandClamp(mk);
-  const rt = mk(calib ? { handClampDeg: calib.handClampDeg } : {});
+  resetBindPose(target);                 // Retargeter reads bind from current state
+  const rt = new Retargeter({
+    bones: target.bones, orderedBones: target.orderedBones,
+    hips: target.hips, hipsParent: target.hipsParent,
+    rig: target.rig, data: probes, srcMap: opts.srcMap,
+    // probes are UNRELATED poses at consecutive indices — the temporal
+    // continuity guard must not smooth across them; gates measure raw transfer
+    guards: { continuity: false, ...(opts.guards ?? {}) },
+  });
   const side = checkSideConsistency(target);
 
   const probeResults = [];
   const rtErrs = [];
   const agg = { boneStretchPct: 0, twistFrac: 0, twistDeg: 0, twistWorstRole: null,
     footFlatDeg: 0, footGroundFrac: 0, capsuleClearance: Infinity };
-  for (let f = 0; f < probes.numFrames; f++) {
-    const grounded = probes.probeGrounded?.[f] ?? false;
-    const rte = roundTripError(rt, f);                 // applies the frame
-    const g = measureGates(rt, f, grounded);
-    for (const e of Object.values(rte.perRole)) rtErrs.push(e);
-    agg.boneStretchPct = Math.max(agg.boneStretchPct, g.boneStretchPct);
-    if (g.twistFrac > agg.twistFrac) {
-      agg.twistFrac = g.twistFrac; agg.twistDeg = g.twistDeg; agg.twistWorstRole = g.twistWorstRole;
+  try {
+    for (let f = 0; f < probes.numFrames; f++) {
+      const grounded = probes.probeGrounded?.[f] ?? false;
+      const rte = roundTripError(rt, f);                 // applies the frame
+      const g = measureGates(rt, f, grounded);
+      for (const e of Object.values(rte.perRole)) rtErrs.push(e);
+      agg.boneStretchPct = Math.max(agg.boneStretchPct, g.boneStretchPct);
+      if (g.twistFrac > agg.twistFrac) {
+        agg.twistFrac = g.twistFrac; agg.twistDeg = g.twistDeg; agg.twistWorstRole = g.twistWorstRole;
+      }
+      if (g.footFlatDeg !== null) agg.footFlatDeg = Math.max(agg.footFlatDeg, g.footFlatDeg);
+      if (g.footGroundFrac !== null) agg.footGroundFrac = Math.max(agg.footGroundFrac, g.footGroundFrac);
+      if (g.capsuleClearance !== null) agg.capsuleClearance = Math.min(agg.capsuleClearance, g.capsuleClearance);
+      probeResults.push({
+        tag: probes.probeTags?.[f] ?? String(f), grounded,
+        roundTripMean: +rte.mean.toFixed(4), roundTripMax: +rte.max.toFixed(4),
+        boneStretchPct: +g.boneStretchPct.toFixed(3),
+        twistFrac: +g.twistFrac.toFixed(2), twistDeg: +g.twistDeg.toFixed(1),
+        twistWorstRole: g.twistWorstRole,
+        footFlatDeg: g.footFlatDeg === null ? null : +g.footFlatDeg.toFixed(1),
+        footGroundFrac: g.footGroundFrac === null ? null : +g.footGroundFrac.toFixed(3),
+        capsuleClearance: g.capsuleClearance === null ? null : +g.capsuleClearance.toFixed(2),
+      });
     }
-    if (g.footFlatDeg !== null) agg.footFlatDeg = Math.max(agg.footFlatDeg, g.footFlatDeg);
-    if (g.footGroundFrac !== null) agg.footGroundFrac = Math.max(agg.footGroundFrac, g.footGroundFrac);
-    if (g.capsuleClearance !== null) agg.capsuleClearance = Math.min(agg.capsuleClearance, g.capsuleClearance);
-    probeResults.push({
-      tag: probes.probeTags?.[f] ?? String(f), grounded,
-      roundTripMean: +rte.mean.toFixed(4), roundTripMax: +rte.max.toFixed(4),
-      boneStretchPct: +g.boneStretchPct.toFixed(3),
-      twistFrac: +g.twistFrac.toFixed(2), twistDeg: +g.twistDeg.toFixed(1),
-      twistWorstRole: g.twistWorstRole,
-      footFlatDeg: g.footFlatDeg === null ? null : +g.footFlatDeg.toFixed(1),
-      footGroundFrac: g.footGroundFrac === null ? null : +g.footGroundFrac.toFixed(3),
-      capsuleClearance: g.capsuleClearance === null ? null : +g.capsuleClearance.toFixed(2),
-    });
+  } catch (error) {
+    resetBindPose(target);
+    throw error;
   }
   rtErrs.sort((a, b) => a - b);
   const mean = rtErrs.reduce((s, e) => s + e, 0) / Math.max(rtErrs.length, 1);
@@ -518,10 +522,6 @@ export function certifyRig(target, probes, opts = {}) {
       spineChain: target.rig.spineChain, roles: target.rig.map,
     },
     scale: { srcHipY: +rt.srcHipY.toFixed(3), charHipY: +rt.hipsBindWorldPos.y.toFixed(3), scaleRoot: +rt.scaleRoot.toFixed(3) },
-    calibration: calib ? {
-      biasTwistDeg: +calib.biasTwistDeg.toFixed(1),
-      handClampDeg: { twist: +calib.handClampDeg.twist.toFixed(1) },
-    } : null,
     probes: probeResults,
     gates: {
       sideConsistency: side ? side.ok : null,

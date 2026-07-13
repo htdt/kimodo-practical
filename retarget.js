@@ -44,10 +44,16 @@ export async function loadGLBSkeleton(GLTFLoader, url, scene) {
   model.updateWorldMatrix(true, true);
   let skinned = null;
   model.traverse(o => { if (o.isSkinnedMesh && !skinned) skinned = o; });
-  const bones = {};
-  skinned.skeleton.bones.forEach(b => { bones[b.name] = b; });
+  if (!skinned?.skeleton) throw new Error(`${url}: no skinned mesh with a skeleton`);
+  const bones = Object.create(null);
+  skinned.skeleton.bones.forEach(b => {
+    if (!b.name) throw new Error(`${url}: every skeleton bone must have a name`);
+    if (hasOwn(bones, b.name)) throw new Error(`${url}: duplicate skeleton bone name "${b.name}"`);
+    bones[b.name] = b;
+  });
   const rig = resolveRig(skinned.skeleton.bones);
-  const hips = rig.map.Hips ? bones[rig.map.Hips] : bones['Hips'];
+  if (!rig.ok) throw new Error(`${url}: incomplete humanoid rig; missing=${rig.missing.join(',')}`);
+  const hips = bones[rig.map.Hips];
   return { model, skinned, bones, hips, rig, animations: gltf.animations };
 }
 
@@ -74,6 +80,25 @@ export const SOMA_SRC = {
   RightArm: 'RightArm', RightForeArm: 'RightForeArm', RightHand: 'RightHand',
 };
 
+const SOURCE_REQUIRED = [
+  'Hips', 'Chest',
+  'LeftHipAnchor', 'RightHipAnchor', 'LeftShoulderAnchor', 'RightShoulderAnchor',
+  'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'RightUpLeg', 'RightLeg', 'RightFoot',
+  'LeftArm', 'LeftForeArm', 'LeftHand', 'RightArm', 'RightForeArm', 'RightHand',
+];
+const SOURCE_SEGMENTS = [
+  ['LeftUpLeg', 'LeftLeg'], ['LeftLeg', 'LeftFoot'],
+  ['RightUpLeg', 'RightLeg'], ['RightLeg', 'RightFoot'],
+  ['LeftArm', 'LeftForeArm'], ['LeftForeArm', 'LeftHand'],
+  ['RightArm', 'RightForeArm'], ['RightForeArm', 'RightHand'],
+];
+const TARGET_REQUIRED = [
+  'Hips', 'Chest',
+  'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'RightUpLeg', 'RightLeg', 'RightFoot',
+  'LeftArm', 'LeftForeArm', 'LeftHand', 'RightArm', 'RightForeArm', 'RightHand',
+];
+const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
 // limb roles: aim from a source joint toward its child joint (both given as
 // canonical source roles, resolved through the source map).
 // base: which transferred body-frame delta carries the bone's twist/roll while the
@@ -94,12 +119,12 @@ const AIM_CHILD = {
 };
 // arm roles whose aim goes through the torso-capsule guard
 const CLIP_GUARD = new Set(['LeftArm', 'LeftForeArm', 'RightArm', 'RightForeArm']);
-// full-orientation transfer: role -> [source role, base frame]. FEET only:
+// full-orientation transfer: target role -> source role. FEET only:
 // both rigs' rest feet are flat on the ground pointing forward, so the
 // pelvis-relative absolute transfer is anchored correctly.
 const FULLQ = {
-  LeftFoot:  ['LeftFoot',  'pelvis'],
-  RightFoot: ['RightFoot', 'pelvis'],
+  LeftFoot: 'LeftFoot',
+  RightFoot: 'RightFoot',
 };
 // HANDS are transferred FOREARM-RELATIVE instead: the old chest-relative
 // absolute transfer re-anchored the hand to the character's T-pose bind, but
@@ -127,9 +152,14 @@ const HEAD_DAMP = { Neck: 0.45, Head: 0.2 };
 const _v = (a) => new THREE.Vector3(a[0], a[1], a[2]);
 
 function frameQ(origin, upPt, rA, rB) {
-  const up = upPt.clone().sub(origin).normalize();
-  const r0 = rA.clone().sub(rB).normalize();
-  const fwd = new THREE.Vector3().crossVectors(r0, up).normalize();
+  const up = upPt.clone().sub(origin);
+  const r0 = rA.clone().sub(rB);
+  if (up.lengthSq() < 1e-12 || r0.lengthSq() < 1e-12)
+    throw new Error('cannot build body frame from coincident joints');
+  up.normalize(); r0.normalize();
+  const fwd = new THREE.Vector3().crossVectors(r0, up);
+  if (fwd.lengthSq() < 1e-12) throw new Error('cannot build body frame from collinear joints');
+  fwd.normalize();
   const right = new THREE.Vector3().crossVectors(up, fwd).normalize();
   return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, fwd));
 }
@@ -138,8 +168,8 @@ function frameQ(origin, upPt, rA, rB) {
 function swingTwist(q, axis) {
   const r = new THREE.Vector3(q.x, q.y, q.z);
   const proj = axis.clone().multiplyScalar(r.dot(axis));
-  const twist = new THREE.Quaternion(proj.x, proj.y, proj.z, q.w).normalize();
-  if (r.dot(axis) < 0 && q.w < 0) { /* keep shortest */ }
+  const twist = new THREE.Quaternion(proj.x, proj.y, proj.z, q.w);
+  if (twist.lengthSq() < 1e-12) twist.identity(); else twist.normalize();
   const swing = q.clone().multiply(twist.clone().invert());
   return { swing, twist };
 }
@@ -153,18 +183,54 @@ function clampAngle(q, maxDeg) {
 }
 
 export class Retargeter {
-  constructor({ bones, orderedBones, hips, hipsParent, data, inPlace, rig, guards, handClampDeg, srcMap, handFollow }) {
+  constructor({ bones, orderedBones, hips, hipsParent, data, inPlace, rig, guards, srcMap, handFollow }) {
+    if (!data || !Array.isArray(data.names) || !Array.isArray(data.rest) || !Array.isArray(data.pos))
+      throw new Error('motion data requires names, rest, and pos arrays');
+    if (!Array.isArray(orderedBones) || !orderedBones.length)
+      throw new Error('target requires a non-empty orderedBones array');
+    if (!bones || typeof bones !== 'object') throw new Error('target requires a bone-name map');
+    const targetNames = new Set();
+    for (const b of orderedBones) {
+      if (!b?.isBone || !b.name) throw new Error('every ordered target bone must be named');
+      if (targetNames.has(b.name)) throw new Error(`target bone names must be unique; duplicate "${b.name}"`);
+      if (bones[b.name] !== b) throw new Error(`target bone map does not match ordered bone "${b.name}"`);
+      targetNames.add(b.name);
+    }
     this.bones = bones; this.orderedBones = orderedBones;
     this.rig = rig ?? resolveRig(orderedBones);
     this.R = this.rig.map;                    // role -> actual bone name
-    if (!this.R.Hips) throw new Error('rigmap: could not resolve Hips; missing=' + this.rig.missing);
-    this.roleOf = {};                          // actual bone name -> role
+    if (!this.rig.ok)
+      throw new Error('rigmap: incomplete humanoid rig; missing=' + this.rig.missing.join(','));
+    const missingTarget = TARGET_REQUIRED.filter(role => !this.R[role] || !bones[this.R[role]]);
+    if (missingTarget.length)
+      throw new Error('target bone map is missing resolved roles: ' + missingTarget.join(','));
+    this.roleOf = Object.create(null);          // actual bone name -> role
     for (const [role, name] of Object.entries(this.R)) this.roleOf[name] = role;
 
     this.hips = hips ?? bones[this.R.Hips];
+    if (!this.hips) throw new Error(`target bones do not contain resolved Hips "${this.R.Hips}"`);
     this.hipsParent = hipsParent ?? this.hips.parent;
+    if (!this.hipsParent)
+      throw new Error('target Hips must have a parent transform (use rigFromBones for standalone rigs)');
     this.data = data;
-    this.idx = {}; data.names.forEach((n, i) => this.idx[n] = i);
+    this.idx = Object.create(null);
+    data.names.forEach((n, i) => {
+      if (typeof n !== 'string' || !n) throw new Error(`motion joint ${i} has no valid name`);
+      if (hasOwn(this.idx, n)) throw new Error(`motion joint names must be unique; duplicate "${n}"`);
+      this.idx[n] = i;
+    });
+    if (data.rest.length !== data.names.length)
+      throw new Error(`motion rest has ${data.rest.length} joints; expected ${data.names.length}`);
+    this.numFrames = data.numFrames ?? data.pos.length;
+    if (!Number.isInteger(this.numFrames) || this.numFrames < 1 || data.pos.length !== this.numFrames)
+      throw new Error(`motion numFrames (${this.numFrames}) must match pos length (${data.pos.length})`);
+    this.fps = data.fps ?? 30;
+    if (!Number.isFinite(this.fps) || this.fps <= 0) throw new Error(`motion fps must be positive; got ${this.fps}`);
+    const hasQuat = Array.isArray(data.quat), hasRestQuat = Array.isArray(data.restQuat);
+    if (hasQuat !== hasRestQuat)
+      throw new Error('motion must provide quat and restQuat together, or omit both');
+    if (hasQuat && (data.quat.length !== this.numFrames || data.restQuat.length !== data.names.length))
+      throw new Error('motion quaternion arrays do not match names/numFrames');
     // source-skeleton map (canonical source role -> data joint name); baked
     // clips carry their own (data.srcMap), default SOMA. Anchor roles fall back
     // to their limb roles when the source has no separate anchor joints
@@ -172,15 +238,49 @@ export class Retargeter {
     this.S = { ...(srcMap ?? data.srcMap ?? SOMA_SRC) };
     for (const [anchor, fb] of [['LeftHipAnchor', 'LeftUpLeg'], ['RightHipAnchor', 'RightUpLeg'],
       ['LeftShoulderAnchor', 'LeftArm'], ['RightShoulderAnchor', 'RightArm']]) {
-      if (!(this.S[anchor] in this.idx)) this.S[anchor] = this.S[fb];
+      if (!hasOwn(this.idx, this.S[anchor])) this.S[anchor] = this.S[fb];
     }
-    for (const role of ['Hips', 'Chest', 'LeftUpLeg', 'LeftLeg', 'RightUpLeg', 'RightLeg']) {
-      if (!(this.S[role] in this.idx))
+    for (const role of SOURCE_REQUIRED) {
+      if (!hasOwn(this.idx, this.S[role]))
         throw new Error(`srcMap: source joint for ${role} ("${this.S[role]}") not in motion data`);
     }
-    this.numFrames = data.numFrames; this.fps = data.fps;
+    const validVec = (v, n) => Array.isArray(v) && v.length === n && v.every(Number.isFinite);
+    const validQuat = (q) => validVec(q, 4) && q.reduce((sum, x) => sum + x * x, 0) > 1e-12;
+    for (const role of SOURCE_REQUIRED) {
+      const i = this.idx[this.S[role]];
+      if (!validVec(data.rest[i], 3)) throw new Error(`motion rest joint "${this.S[role]}" is not a finite vec3`);
+      if (hasQuat && !validQuat(data.restQuat[i]))
+        throw new Error(`motion restQuat joint "${this.S[role]}" is not a valid quaternion`);
+      for (let f = 0; f < this.numFrames; f++) {
+        if (!validVec(data.pos[f]?.[i], 3))
+          throw new Error(`motion pos frame ${f}, joint "${this.S[role]}" is not a finite vec3`);
+        if (hasQuat && !validQuat(data.quat[f]?.[i]))
+          throw new Error(`motion quat frame ${f}, joint "${this.S[role]}" is not a valid quaternion`);
+      }
+    }
+    const dist2 = (a, b) => {
+      const dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+      return dx * dx + dy * dy + dz * dz;
+    };
+    for (const [parentRole, childRole] of SOURCE_SEGMENTS) {
+      const a = this.idx[this.S[parentRole]], b = this.idx[this.S[childRole]];
+      if (dist2(data.rest[a], data.rest[b]) < 1e-12)
+        throw new Error(`source rest segment ${parentRole}→${childRole} has zero length`);
+      for (let f = 0; f < this.numFrames; f++) {
+        if (dist2(data.pos[f][a], data.pos[f][b]) < 1e-12)
+          throw new Error(`source segment ${parentRole}→${childRole} collapses at frame ${f}`);
+      }
+    }
     this.inPlace = inPlace ?? false;
-    this.guards = { handClamp: true, torsoCapsule: true, ground: false, continuity: true, ...(guards ?? {}) };
+    if (typeof this.inPlace !== 'boolean') throw new Error(`inPlace must be boolean; got ${this.inPlace}`);
+    if (guards !== undefined && (!guards || typeof guards !== 'object' || Array.isArray(guards)))
+      throw new Error('guards must be an object');
+    const guardDefaults = { handClamp: true, torsoCapsule: true, ground: false, continuity: true };
+    for (const [name, value] of Object.entries(guards ?? {})) {
+      if (!hasOwn(guardDefaults, name)) throw new Error(`unknown retarget guard "${name}"`);
+      if (typeof value !== 'boolean') throw new Error(`guard ${name} must be boolean`);
+    }
+    this.guards = { ...guardDefaults, ...(guards ?? {}) };
     // temporal continuity guard: cap per-frame rotation of hands/forearms/feet
     // during SEQUENTIAL playback (auto-bypassed on random frame access, so the
     // probe battery measures the raw transfer). Catches the two flip sources:
@@ -189,12 +289,7 @@ export class Retargeter {
     this._contPrev = {};
     this._lastF = null;
     this.yLift = 1;                            // extra gain on upward root displacement (jumps)
-    // per-character override of the hand twist/swing limits (deg). A source can
-    // hold its wrists with a constant bias vs some characters' bind hands, so the
-    // transfer can sit ON the clamp — tightening it per character absorbs the bias.
-    this.clampLim = {};
-    for (const role in CLAMP) this.clampLim[role] = { ...CLAMP[role], ...(handClampDeg ?? {}) };
-    this.hasQuat = Array.isArray(data.quat) && Array.isArray(data.restQuat);
+    this.hasQuat = hasQuat;
     this.animWorld = {};
     this.animWorldPos = {};                    // bone uuid -> world position this frame
 
@@ -208,19 +303,19 @@ export class Retargeter {
     for (const [role, [srcA, srcB, base]] of Object.entries(AIM)) {
       const name = this.R[role], child = this.R[AIM_CHILD[role]];
       const a = this.S[srcA], b = this.S[srcB];
-      if (name && child && bones[name] && bones[child] && a in this.idx && b in this.idx)
+      if (name && child && bones[name] && bones[child] && hasOwn(this.idx, a) && hasOwn(this.idx, b))
         this.aimByBone[name] = [a, b, base, child, role];
     }
-    this.fullqByBone = {};    // actual name -> [srcJoint, base, role]
-    for (const [role, [srcRole, base]] of Object.entries(FULLQ)) {
+    this.fullqByBone = {};    // actual name -> source joint
+    for (const [role, srcRole] of Object.entries(FULLQ)) {
       const name = this.R[role], src = this.S[srcRole];
-      if (name && bones[name] && src in this.idx) this.fullqByBone[name] = [src, base, role];
+      if (name && bones[name] && hasOwn(this.idx, src)) this.fullqByBone[name] = src;
     }
     this.handByBone = {};     // actual name -> [srcWrist, srcForearm, forearmActualName, role]
     for (const [role, foreRole] of Object.entries(HAND_LOCAL)) {
       const name = this.R[role], foreName = this.R[foreRole];
       const sw = this.S[role], sf = this.S[foreRole];
-      if (name && foreName && bones[name] && bones[foreName] && sw in this.idx && sf in this.idx)
+      if (name && foreName && bones[name] && bones[foreName] && hasOwn(this.idx, sw) && hasOwn(this.idx, sf))
         this.handByBone[name] = [sw, sf, foreName, role];
     }
     this.headDamp = {};
@@ -255,6 +350,8 @@ export class Retargeter {
       const p0 = bones[name].getWorldPosition(new THREE.Vector3());
       const p1 = bones[child].getWorldPosition(new THREE.Vector3());
       this.bindLen[name] = p1.distanceTo(p0);
+      if (!Number.isFinite(this.bindLen[name]) || this.bindLen[name] < 1e-6)
+        throw new Error(`target segment "${name}" has zero or invalid bind length`);
       this.bindDir[name] = p1.sub(p0).normalize();
     }
 
@@ -273,7 +370,6 @@ export class Retargeter {
 
     // pelvis + chest frames: character bind, source rest
     this.FcBind = this._charPelvisFrame();
-    this.FchestBind = this._charChestFrame();
     this.FpRest = this._srcPelvisFrame(data.rest);
     this.FchestRest = this._srcChestFrame(data.rest);
 
@@ -283,7 +379,7 @@ export class Retargeter {
     // pelvis must drop in proportion to the legs or planted feet sink/float on
     // rigs whose leg-to-hip proportion differs from the source's.
     this.scaleRoot = this.hipsBindWorldPos.y / this.srcHipY;
-    const srcAnkles = [this.S.LeftFoot, this.S.RightFoot].filter(n => n in this.idx);
+    const srcAnkles = [this.S.LeftFoot, this.S.RightFoot].filter(n => hasOwn(this.idx, n));
     const charAnkles = [this.R.LeftFoot, this.R.RightFoot].filter(n => n && bones[n]);
     if (srcAnkles.length && charAnkles.length) {
       const srcAnkY = Math.min(...srcAnkles.map(n => data.rest[this.idx[n]][1]));
@@ -292,6 +388,8 @@ export class Retargeter {
       const srcLeg = this.srcHipY - srcAnkY, charLeg = this.hipsBindWorldPos.y - charAnkY;
       if (srcLeg > 0.2 && charLeg > 0.05) this.scaleRoot = charLeg / srcLeg;
     }
+    if (!Number.isFinite(this.scaleRoot) || this.scaleRoot <= 0)
+      throw new Error(`cannot derive a positive root scale; got ${this.scaleRoot}`);
 
     // ground clamp: foot/toe bones with their bind-pose world heights — during
     // animation none of them may sink below its bind height (proportion mismatch
@@ -317,11 +415,18 @@ export class Retargeter {
     this.IDENT = new THREE.Quaternion();
 
     this.FcBindInv = this.FcBind.clone().invert();
-    this.FchestBindInv = this.FchestBind.clone().invert();
+    this.handFollow = handFollow ?? data.handFollow ?? 1;
+    if (!Number.isFinite(this.handFollow) || this.handFollow < 0 || this.handFollow > 1)
+      throw new Error(`handFollow must be between 0 and 1; got ${this.handFollow}`);
+    this.foreRollSrc = data.foreRollSrc ?? false;
+    if (typeof this.foreRollSrc !== 'boolean')
+      throw new Error(`foreRollSrc must be boolean; got ${this.foreRollSrc}`);
+    if (this.foreRollSrc && !this.hasQuat)
+      throw new Error('foreRollSrc requires quat and restQuat motion channels');
     if (this.hasQuat) {
       this.restQInv = {};
       for (const name in this.fullqByBone) {
-        const sj = this.fullqByBone[name][0];
+        const sj = this.fullqByBone[name];
         if (this.idx[sj] === undefined) continue;
         this.restQInv[sj] = this._q(data.restQuat[this.idx[sj]]).invert();
       }
@@ -352,10 +457,6 @@ export class Retargeter {
       // roll shows as a "broken" fist — so human-mocap sources bake a low
       // value (clip JSON handFollow) and keep only a hint of wrist life.
       // Authored-wrist sources omit the key and default to full transfer.
-      this.handFollow = handFollow ?? data.handFollow ?? 1;
-      // forearm roll from the source's own twist instead of the body-rebase
-      // projection (see the AIM branch); opt-in per clip (data.foreRollSrc)
-      this.foreRollSrc = data.foreRollSrc ?? false;
     }
     this.contBones = new Set(CONT_ROLES.map(r => this.R[r]).filter(n => n && bones[n]));
   }
@@ -364,9 +465,8 @@ export class Retargeter {
   _yawRebase(q) { return this.rootYaw.clone().multiply(q).multiply(this.rootYawInv); }
 
   _gp(P, name) { return _v(P[this.idx[name]]); }
-  _q(a) { return new THREE.Quaternion(a[0], a[1], a[2], a[3]); }
+  _q(a) { return new THREE.Quaternion(a[0], a[1], a[2], a[3]).normalize(); }
   _cp(name) { return this.bones[name].getWorldPosition(new THREE.Vector3()); }
-  _role(role) { return this.bones[this.R[role]]; }
 
   _srcPelvisFrame(P) {
     return frameQ(this._gp(P, this.S.Hips), this._gp(P, this.S.Chest),
@@ -382,12 +482,6 @@ export class Retargeter {
     return frameQ(this._cp(this.R.Hips), this._cp(chest),
       this._cp(this.R.LeftUpLeg), this._cp(this.R.RightUpLeg));
   }
-  _charChestFrame() {
-    const ls = this._cp(this.R.LeftArm), rs = this._cp(this.R.RightArm);
-    const mid = ls.clone().add(rs).multiplyScalar(0.5);
-    return frameQ(this._cp(this.chestBone.name), mid, ls, rs);
-  }
-
   // world position of a bone as of THIS frame's already-applied parents:
   // parent world pos + parent world quat * (world-scaled local offset). Bones are
   // processed in DFS order, so a bone's parent is always finalized before the bone.
@@ -434,7 +528,7 @@ export class Retargeter {
   // clamp a full-orientation target so the bone stays within anatomical limits
   // relative to its parent (twist about the bone's bind direction, swing = rest)
   _clampToParent(targetWorldQ, b, role, parentWorld) {
-    const lim = this.clampLim[role];
+    const lim = CLAMP[role];
     if (!lim || !this.guards.handClamp) return targetWorldQ;
     const bindLocal = this.bindLocalQ[b.name];
     const local = parentWorld.clone().invert().multiply(targetWorldQ);
@@ -446,6 +540,11 @@ export class Retargeter {
     const ct = clampAngle(twist, lim.twist);
     const relClamped = cs.multiply(ct);
     return parentWorld.clone().multiply(bindLocal).multiply(relClamped);
+  }
+
+  resetContinuity() {
+    this._lastF = null;
+    this._contPrev = {};
   }
 
   applyFrame(f) {
@@ -539,9 +638,9 @@ export class Retargeter {
           target = ride.slerp(target, this.handFollow);
         }
         target = this._clampToParent(target, b, hRole, parentWorld);
-      } else if (this.hasQuat && this.fullqByBone[b.name] && this.restQInv[this.fullqByBone[b.name][0]]) {
+      } else if (this.hasQuat && this.fullqByBone[b.name] && this.restQInv[this.fullqByBone[b.name]]) {
         // feet: true source ankle orientation, transferred pelvis-relative
-        const [sq] = this.fullqByBone[b.name];
+        const sq = this.fullqByBone[b.name];
         const qNow = this._q(this.data.quat[f][this.idx[sq]]);
         target = Fc.clone().multiply(FpInv).multiply(qNow).multiply(this.restQInv[sq])
           .multiply(this.FpRest).multiply(this.FcBindInv).multiply(this.bindWorldQ[b.name]);

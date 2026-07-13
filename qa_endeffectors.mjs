@@ -17,13 +17,15 @@
 //
 // Usage: node qa_endeffectors.mjs <char.glb> <movesDir> [--gate]
 //        e.g. node qa_endeffectors.mjs ../web/fighter.glb ../web/moves_kimodo --gate
-// Gates: median |foot pitch| <= 8 deg on contact frames,
-//        median hand skew   <= 12 deg over all frames (per side, per clip).
+// Gates: median |foot pitch| <= 10 deg on contact frames,
+//        median hand skew   <= 35 deg over all frames (per side, per clip),
+//        with aggregate medians <= 4 / 15 deg.
 import fs from 'node:fs';
 import path from 'node:path';
 import * as THREE from 'three';
 import { loadGLBBones } from './glbskel.mjs';
-import { buildBoneOrder, Retargeter } from './retarget.js';
+import { Retargeter } from './retarget.js';
+import { rigFromBones, resetBindPose } from './align.js';
 
 const [charPath, movesDir] = process.argv.slice(2);
 const GATE = process.argv.includes('--gate');
@@ -45,20 +47,18 @@ const HAND_SKEW_MAX = 35;       // deg, per-clip median cap
 const AGG_FOOT_MAX = 4;         // deg, median of per-clip medians
 const AGG_HAND_MAX = 15;        // deg, median of per-clip medians
 
-const { byName, wrapper } = await loadGLBBones(charPath);
-const bones = {};
-for (const [n, b] of byName) bones[n] = b;
+const { bones: loadedBones, wrapper } = await loadGLBBones(charPath);
+const target = rigFromBones(loadedBones);
+const bones = target.bones;
 const manifest = JSON.parse(fs.readFileSync(path.join(movesDir, 'manifest.json'), 'utf8'));
-
-// snapshot the pristine bind pose once; restore before every clip (the
-// Retargeter constructor reads "bind" from current transforms)
-const bindSnap = Object.values(bones).map(b => ({
-  b, p: b.position.clone(), q: b.quaternion.clone(), s: b.scale.clone(),
-}));
-function restoreBind() {
-  for (const { b, p, q, s } of bindSnap) { b.position.copy(p); b.quaternion.copy(q); b.scale.copy(s); }
-  wrapper.updateMatrixWorld(true);
-}
+if (!Array.isArray(manifest.moves) || !manifest.moves.length)
+  throw new Error('manifest must contain a non-empty moves array');
+const manifestNames = manifest.moves.map(mv => mv.name);
+if (manifestNames.some(name => typeof name !== 'string' || !name) ||
+    new Set(manifestNames).size !== manifestNames.length)
+  throw new Error('manifest move names must be present and unique');
+if (manifest.moves.some(mv => typeof mv.file !== 'string' || !mv.file))
+  throw new Error('every manifest move must provide a clip file');
 
 const deg = (r) => r * 180 / Math.PI;
 const median = (a) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : NaN; };
@@ -71,15 +71,14 @@ const rows = [];
 for (const mv of manifest.moves) {
   const motion = JSON.parse(fs.readFileSync(path.join(movesDir, mv.file), 'utf8'));
   const S = motion.srcMap;
-  if (!S) { console.log(`[skip] ${mv.name}: clip carries no srcMap`); continue; }
-  const idx = {}; motion.names.forEach((n, i) => idx[n] = i);
+  if (!S) { console.log(`[FAIL] ${mv.name}: clip carries no srcMap`); failures++; continue; }
+  const idx = Object.create(null); motion.names.forEach((n, i) => idx[n] = i);
 
   // fresh skeleton state per clip: reset to bind, then construct (constructor
   // snapshots bind from current transforms)
-  restoreBind();
-  const orderedBones = buildBoneOrder(wrapper.children[0].isBone ? wrapper.children[0] : wrapper);
+  resetBindPose(target);
   const NOGUARDS = process.argv.includes('--noguards');   // diagnostic mode
-  const rt = new Retargeter({ bones, orderedBones, data: motion,
+  const rt = new Retargeter({ ...target, data: motion,
     guards: NOGUARDS ? { handClamp: false, torsoCapsule: false, continuity: false } : {} });
   const R = rt.R;
 
@@ -122,39 +121,29 @@ for (const mv of manifest.moves) {
 
   const footPitch = { Left: [], Right: [] };
   const handSkew = { Left: [], Right: [] };
-  const handTwist = { Left: [], Right: [] };
 
   // source contact detection: toe near clip-min height and slow
   const srcToeMin = {};
   for (const side of ['Left', 'Right']) {
     const ti = idx[side === 'Left' ? 'LeftToeBase' : 'RightToeBase'];
+    if (ti === undefined) throw new Error(`${mv.name}: source clip has no ${side}ToeBase joint`);
     srcToeMin[side] = Math.min(...motion.pos.map(f => f[ti][1]));
   }
 
-  // source anatomical rest deviation of the hand (from the baked rest pose):
-  // subtracted so devSrc means "deviation from straight-along-forearm"
-  const srcRestHandDev = {};
-  for (const side of ['Left', 'Right']) {
-    const w = idx[`${side}Hand`], m = idx[`${side}HandMiddle1`], fo = idx[S[`${side}ForeArm`]];
-    if (m === undefined) { srcRestHandDev[side] = 0; continue; }
-    const hd = v3(motion.rest[m]).sub(v3(motion.rest[w])).normalize();
-    const fd = v3(motion.rest[w]).sub(v3(motion.rest[fo])).normalize();
-    srcRestHandDev[side] = deg(Math.acos(THREE.MathUtils.clamp(hd.dot(fd), -1, 1)));
-  }
-
-  for (let f = 0; f < motion.numFrames; f++) {
+  const N = motion.numFrames ?? motion.pos.length;
+  for (let f = 0; f < N; f++) {
     rt.applyFrame(f);
     wrapper.updateMatrixWorld(true);
     for (const side of ['Left', 'Right']) {
       const { foot, toe, fore, hand, handChild } = fix[side];
-      const sToe = idx[`${side}ToeBase`], sToeEnd = idx[`${side}ToeEnd`];
+      const sToe = idx[`${side}ToeBase`];
       const sFore = idx[S[`${side}ForeArm`]], sWrist = idx[S[`${side}Hand`]];
-      const sMid = idx[`${side}HandMiddle1`];
+      const sMid = idx[`${side}HandMiddle1`] ?? idx[`${side}HandMiddleEnd`];
 
       // ---- foot pitch on source-contact frames
       if (foot && toe) {
         const p = motion.pos[f][sToe], speed = f ? Math.hypot(
-          p[0] - motion.pos[f - 1][sToe][0], p[2] - motion.pos[f - 1][sToe][2]) * motion.fps : 0;
+          p[0] - motion.pos[f - 1][sToe][0], p[2] - motion.pos[f - 1][sToe][2]) * rt.fps : 0;
         if (p[1] < srcToeMin[side] + 0.03 && speed < 0.3) {
           const d = wpos(toe).sub(wpos(foot)).normalize();
           const pitch = deg(Math.asin(THREE.MathUtils.clamp(d.y, -1, 1)));
@@ -183,17 +172,6 @@ for (const mv of manifest.moves) {
           - fix[side].bindHandDev;
         handSkew[side].push(Math.abs(devChar - devSrc));
 
-        // full-orientation skew incl. TWIST: world rotation delta of the
-        // character hand (vs bind) against the source wrist (vs rest) —
-        // rest and bind are the same canonical pose, so the deltas must
-        // agree; the angle of D_char·D_src⁻¹ is the total error
-        const qW = motion.quat[f][sWrist], rW = motion.restQuat[sWrist];
-        const dSrc = new THREE.Quaternion(qW[0], qW[1], qW[2], qW[3])
-          .multiply(new THREE.Quaternion(rW[0], rW[1], rW[2], rW[3]).invert());
-        const dChar = hand.getWorldQuaternion(new THREE.Quaternion())
-          .multiply(handBindQ.clone().invert());
-        const dq = dChar.multiply(dSrc.invert());
-        handTwist[side].push(deg(2 * Math.acos(Math.min(1, Math.abs(dq.w)))));
       }
     }
   }
@@ -201,13 +179,12 @@ for (const mv of manifest.moves) {
   for (const side of ['Left', 'Right']) {
     const fp = median(footPitch[side].map(Math.abs));
     const hs = median(handSkew[side]);
-    const ht = median(handTwist[side]);
     const fpOk = footPitch[side].length < FOOT_MIN_FRAMES || !(fp > FOOT_PITCH_MAX);
-    const hsOk = !(hs > HAND_SKEW_MAX);
+    const hsOk = Number.isFinite(hs) && hs <= HAND_SKEW_MAX;
     if (!fpOk || !hsOk) failures++;
     rows.push({ clip: mv.name, side, footPitchMed: +fp.toFixed(1),
                 contactFrames: footPitch[side].length,
-                handSkewMed: +hs.toFixed(1), handTwistMed: +ht.toFixed(1),
+                handSkewMed: +hs.toFixed(1),
                 ok: fpOk && hsOk });
   }
 }
@@ -215,6 +192,7 @@ for (const mv of manifest.moves) {
 const aggFoot = median(rows.filter(r => r.contactFrames >= FOOT_MIN_FRAMES).map(r => r.footPitchMed));
 const aggHand = median(rows.map(r => r.handSkewMed).filter(v => !Number.isNaN(v)));
 if (aggFoot > AGG_FOOT_MAX || aggHand > AGG_HAND_MAX) failures++;
+if (!rows.length || !Number.isFinite(aggFoot) || !Number.isFinite(aggHand)) failures++;
 
 console.log(`\nend-effector fidelity — ${path.basename(charPath)} vs ${movesDir}`);
 console.log(`gates: per-clip |foot pitch| med <= ${FOOT_PITCH_MAX} deg (>=${FOOT_MIN_FRAMES} contact frames), ` +
@@ -222,8 +200,7 @@ console.log(`gates: per-clip |foot pitch| med <= ${FOOT_PITCH_MAX} deg (>=${FOOT
 for (const r of rows)
   console.log(`${r.ok ? 'ok  ' : 'FAIL'} ${r.clip.padEnd(13)} ${r.side.padEnd(5)}` +
     ` footPitch=${String(r.footPitchMed).padStart(5)} (${r.contactFrames}f)` +
-    ` handSkew=${String(r.handSkewMed).padStart(5)}` +
-    ` handTwist=${String(r.handTwistMed).padStart(5)}`);
+    ` handSkew=${String(r.handSkewMed).padStart(5)}`);
 console.log(`aggregate: foot ${aggFoot?.toFixed(1)} deg, hand ${aggHand?.toFixed(1)} deg`);
 console.log(failures ? `\n${failures} FAILING gates` : '\nALL END-EFFECTOR GATES PASS');
 if (GATE && failures) process.exit(1);

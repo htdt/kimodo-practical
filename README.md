@@ -5,7 +5,8 @@ the manual and tooling for turning its generated motion into shipped game
 animations for **any humanoid character, in any engine**. Motion is generated
 once on the canonical skeleton, quality-gated, retargeted onto a **certified**
 character rig, and shipped as ordinary baked clips. The game runtime contains
-zero neural code and zero hand-tuned motion constants.
+zero neural code; gameplay consumes generated frame data and root motion rather
+than per-clip hand-tuned timing or displacement constants.
 
 Written to be followed end-to-end by an autonomous coding agent (or a human).
 It is engine-agnostic and game-agnostic: the reference implementation is
@@ -57,7 +58,7 @@ Two principles carry the whole design:
 | `align.js` | probe mining, inverse recovery, gates, `certifyRig` |
 | `glbskel.mjs` | GLB → bone hierarchy + animation sampler in node (no browser) |
 | `certify.mjs` | certification CLI, writes `<char.glb>.retarget_certificate.json` |
-| `prebake.mjs` | Stage 3 pre-bake for non-three.js engines: character GLB + baked manifest → same GLB with one glTF animation per clip + `rootmotion.json` (INTEGRATE.md §9) |
+| `prebake.mjs` | Stage 3 pre-bake for non-three.js engines: character GLB + baked manifest → new GLB with one glTF animation per clip + `rootmotion.json` (INTEGRATE.md §9) |
 | `qa_endeffectors.mjs` | end-effector fidelity gates: foot flatness + wrist-bend tracking per baked clip on the character — catches rest-anchor skew ("skewed fists/feet") mechanically |
 | `selftest.mjs` | zero-asset self-test (synthetic rigs, procedural motion, sabotage cases) |
 | `kimodo/` | Stage 2 generation tools (run against a Kimodo install): `kimogen.py` (text-prompted moves + stance bookends + gates), `bake_kimodo.py`, the validated MK move spec, axis validator, text-encoder setup |

@@ -15,6 +15,8 @@ import {
   certifyRig, checkSideConsistency, resetBindPose, DEFAULT_GATES,
 } from './align.js';
 import { prebake } from './prebake.mjs';
+import { classify } from './rigmap.js';
+import { Retargeter } from './retarget.js';
 
 let failures = 0;
 function check(label, ok, detail = '') {
@@ -94,6 +96,26 @@ check('target rig resolves (Mixamo names, +Z facing, 0.01 armature)', tgtT.rig.o
   'missing=' + tgtT.rig.missing);
 check('target world scale sane despite armature', Math.abs(
   tgt.bones.Hips.getWorldPosition(new THREE.Vector3()).y - 1.02) < 1e-6);
+check('side-qualified Hip names resolve as upper legs',
+  classify('LeftHip') === 'LeftUpLeg' && classify('RightHip') === 'RightUpLeg');
+
+// Pure-topology fallback: direct upper-arm roots with a finger child must not
+// be shifted by one role (mistaking the fourth chain node for proof of a clavicle).
+{
+  const direct = { ...tgtSpec };
+  delete direct.LeftShoulder; delete direct.RightShoulder;
+  direct.LeftArm = ['Spine2', [0.20, 0.04, 0]];
+  direct.RightArm = ['Spine2', [-0.20, 0.04, 0]];
+  direct.LeftFinger = ['LeftHand', [0.10, 0, 0]];
+  direct.RightFinger = ['RightHand', [-0.10, 0, 0]];
+  const rename = Object.fromEntries(Object.keys(direct).map((name, i) => [name, `bone_${i}`]));
+  const opaque = Object.fromEntries(Object.entries(direct).map(([name, [parent, pos]]) =>
+    [rename[name], [parent ? rename[parent] : null, pos]]));
+  const t = rigFromBones(buildRig(opaque).all);
+  check('pure-topology arms ignore finger-chain false shoulders',
+    t.rig.map.LeftArm === rename.LeftArm && t.rig.map.LeftHand === rename.LeftHand &&
+    t.rig.map.RightArm === rename.RightArm && t.rig.map.RightHand === rename.RightHand);
+}
 
 // procedurally animate the source: torso twist, arm swings + elbow bends,
 // leg swings + knee bends, slight pelvis bob — moderate, humanoid-plausible
@@ -122,6 +144,24 @@ check('motion snapshot has quats + rest', Array.isArray(motion.quat) && motion.r
 const srcMap = srcMapFromRig(srcT.rig.map);
 const probes = mineProbeFrames([motion], srcMap);
 check('probes mined from synthetic clip', probes.numFrames === 7, `got ${probes.numFrames}`);
+check('probe mining preserves runtime transfer settings',
+  probes.handFollow === 1 && probes.foreRollSrc === false);
+let mixedSettingsRejected = false;
+try { mineProbeFrames([motion, { ...motion, handFollow: 0.3 }], srcMap); }
+catch { mixedSettingsRejected = true; }
+check('probe mining rejects mixed transfer settings', mixedSettingsRejected);
+let invalidGuardRejected = false;
+try {
+  new Retargeter({ ...tgtT, data: motion, srcMap, guards: { continuity: 'yes' } });
+} catch { invalidGuardRejected = true; }
+check('retargeter rejects malformed guard options', invalidGuardRejected);
+let quatlessRollRejected = false;
+try {
+  const positionOnly = { ...motion, foreRollSrc: true };
+  delete positionOnly.quat; delete positionOnly.restQuat;
+  new Retargeter({ ...tgtT, data: positionOnly, srcMap });
+} catch { quatlessRollRejected = true; }
+check('retargeter rejects source forearm roll without quaternions', quatlessRollRejected);
 
 // prone probe: supine pose (horizontal hips→chest axis) with the hands held
 // above the belly. Locks in the capsule-clearance fix: the gate must measure
@@ -208,8 +248,13 @@ resetBindPose(tgtT);
   const travelClip = snapshotMotion(srcT.orderedBones, (f) => {
     pose(f);
     src.bones.pelvis.position.x = 0.02 * f;
+    src.bones.pelvis.position.y += 0.10 * Math.sin(Math.PI * f / (N - 1)) ** 2;
     src.wrapper.updateMatrixWorld(true);
   }, N, FPS, 'selftest_clip');
+  // q and -q encode the same rotation. Stress the GLB baker with deliberately
+  // discontinuous source signs; emitted animation tracks must stay continuous.
+  for (let f = 1; f < N; f += 2)
+    for (const q of travelClip.quat[f]) for (let k = 0; k < 4; k++) q[k] *= -1;
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mb-selftest-'));
   try {
@@ -218,6 +263,7 @@ resetBindPose(tgtT);
     doc.createBuffer();
     const scene = doc.createScene('scene');
     const skin = doc.createSkin('skin');
+    doc.createAnimation('input_animation_to_replace');
     const nodes = {};
     for (const [name, [parent, pos]] of Object.entries(tgtSpec)) {
       nodes[name] = doc.createNode(name).setTranslation(pos);
@@ -235,14 +281,20 @@ resetBindPose(tgtT);
       frame_data: { startup: 10, active: [10, 14], recovery: N - 14 },
     }] }));
 
+    let overwriteRejected = false;
+    try {
+      await prebake({ glb: glbPath, manifest: manifestPath, out: glbPath, log: () => {} });
+    } catch { overwriteRejected = true; }
+    check('prebake: refuses to overwrite its input GLB', overwriteRejected);
+
     const { outPath, rmPath } = await prebake({
       glb: glbPath, manifest: manifestPath,
-      out: path.join(dir, 'char_anim.glb'), log: () => {},
+      out: path.join(dir, 'char_anim.glb'), ylift: { selftest_clip: 1.5 }, log: () => {},
     });
 
     const outDoc = await new NodeIO().read(outPath);
     const anims = outDoc.getRoot().listAnimations();
-    check('prebake: one glTF animation per manifest clip',
+    check('prebake: replaces input animations with one per manifest clip',
       anims.length === 1 && anims[0].getName() === 'selftest_clip');
     const channels = anims[0]?.listChannels() ?? [];
     const rot = channels.filter(c => c.getTargetPath() === 'rotation');
@@ -253,6 +305,17 @@ resetBindPose(tgtT);
     check('prebake: hips translation channel present', !!hipsT);
     check('prebake: sampler covers every frame',
       !!hipsT && hipsT.getSampler().getInput().getArray().length === N);
+    let worstQuatDot = 1;
+    for (const ch of rot) {
+      const q = ch.getSampler().getOutput().getArray();
+      for (let f = 1; f < N; f++) {
+        const a = (f - 1) * 4, b = f * 4;
+        worstQuatDot = Math.min(worstQuatDot,
+          q[a] * q[b] + q[a + 1] * q[b + 1] + q[a + 2] * q[b + 2] + q[a + 3] * q[b + 3]);
+      }
+    }
+    check('prebake: quaternion tracks are sign-continuous', worstQuatDot >= -1e-6,
+      `minimum adjacent dot ${worstQuatDot}`);
 
     const rm = JSON.parse(fs.readFileSync(rmPath, 'utf8'));
     const clip = rm.clips.selftest_clip;
@@ -261,12 +324,14 @@ resetBindPose(tgtT);
     const pi = travelClip.names.indexOf(srcMap.Hips);
     let worst = 0;
     for (let f = 0; f < N; f++) {
+      let dy = travelClip.pos[f][pi][1] - travelClip.rest[pi][1];
+      if (dy > 0) dy *= 1.5;
       worst = Math.max(worst,
         Math.abs(clip.pelvisXZ[f][0] - travelClip.pos[f][pi][0] * k),
         Math.abs(clip.pelvisXZ[f][1] - travelClip.pos[f][pi][2] * k),
-        Math.abs(clip.hipY[f] - travelClip.pos[f][pi][1] * k));
+        Math.abs(clip.hipY[f] - (1.02 + dy * k)));
     }
-    check('prebake: root motion matches source pelvis curve × scaleRoot',
+    check('prebake: root motion and baked hip height match the animation',
       worst < 1e-9, `worst |err| ${worst}`);
     check('prebake: loop flag + frame data pass through',
       clip.loop === true && clip.frameData?.startup === 10);

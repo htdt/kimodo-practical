@@ -11,7 +11,7 @@ the best, and bake canonicalized clips + frame data.**
 
 ```
  move spec              stance pose             generation             bake
- prompts + intents ──►  extracted from the ──►  N samples/move   ──►  canonicalize,
+ prompts + intents ──►  extracted from the ──►  N samples/move   ──►  validate frame,
  (JSON, per move)       generated idle          → QA gates            frame data,
                         (bookend constraint)    → best-of-N           manifest
   moveset_mk.json        kimogen.py stance       kimogen.py gen        bake_kimodo.py
@@ -39,9 +39,10 @@ the best, and bake canonicalized clips + frame data.**
 Every baked clip is a motion JSON in the ALIGN.md format (world-space joint
 positions + quaternions per frame, Y-up meters, with `rest`/`restQuat`), and
 **canonicalized**: frame 0 pelvis at the origin, heading = 0, canonical
-forward = **+X**. Canonicalize at bake time — raw generations inherit
-arbitrary world frames, and the runtime (Stage 3) depends on every clip
-agreeing on origin and forward.
+forward = **+X**. `kimogen.py` canonicalizes before evaluating gates (and
+re-canonicalizes after loop trimming); `bake_kimodo.py` refuses clips that do
+not satisfy the contract. Raw generations inherit arbitrary world frames, and
+the runtime (Stage 3) depends on every clip agreeing on origin and forward.
 
 Each clip also carries:
 
@@ -59,10 +60,12 @@ with its file, frame count, fps, loop flag, and frame data (§5).
 
 ## 2. The stance pose (the bookend)
 
-**Bookend every move with the same pose.** Start from it, end on it — this is
-what lets clips chain and crossfade in-game with a single short blend. *Which*
-pose is arbitrary: pick your game's natural contact pose (the MK set uses a
-fighting stance; an endless runner would use a run-contact pose).
+**Bookend transition-sensitive one-shots with the same pose.** Set
+`stance_bookend` when a move must start and end on the shared contact pose;
+cyclic locomotion instead closes on its best pose-space loop, while terminal or
+prompt-only reactions can omit the constraint. *Which* shared pose is arbitrary:
+pick your game's natural contact pose (the MK set uses a fighting stance; an
+endless runner would use a run-contact pose).
 
 The pose is not authored by hand — it is **extracted from the generation
 itself**: generate the idle first (unconstrained), then take its medoid frame
@@ -130,15 +133,19 @@ python kimogen.py report                            # gate table so far
 
 | gate | meaning | reject |
 |---|---|---|
-| nan / shape | malformed sample | any |
+| non-finite / shape | malformed sample | any |
+| contact evidence | at least one foot-contact label on ≥5% of frames | missing contact signal |
 | travel intent | net root X vs the spec's `travel` | wrong sign, or drift on `in_place` |
 | apex | the move's defining moment (`ankle_height`, `root_rise`, …) in world space | outside `min`/`max` |
-| stance match | end-effector error vs the stance pose at both bookends | > 0.25 m |
-| foot skate | mean horizontal ankle speed during ground contact | above source-prior level |
-| jitter | mean 2nd difference of joint angles | visible vibration |
+| stance match | end-effector error vs the stance pose at both bookends | > 0.22 m |
+| foot skate | mean horizontal foot/toe speed during labeled ground contact | > 0.12 m/s |
+| jitter | mean 2nd difference of joint positions | > 0.015 m/frame² |
 
 Passing samples are ranked by a score (skate + jitter + end-stance error);
-the winner's NPZ + gate/frame-data JSON land in `out/moves/`.
+the winner's NPZ + gate/frame-data JSON land in `out/moves/`. If no sample
+passes, `kimogen.py` exits nonzero, writes only the diagnostic report, and
+removes any stale NPZ for that move so a previous generation cannot be baked
+by accident.
 
 **Gate what you actually care about, in world space.** A cautionary tale
 (learned on a previous motion source, still the operating rule): a "jump"
@@ -162,12 +169,18 @@ than debugging through the retargeter.
 python bake_kimodo.py --web <movesDir>    # clips + manifest.json
 ```
 
-Canonicalization (yaw to +X facing), the rest-pose normalization (identity
+`kimogen.py` has already canonicalized the motion and trimmed loops;
+`bake_kimodo.py` verifies that frame, builds the normalized rest pose (identity
 rest + straightened hand anchors — the trap and its fix: KIMODO.md §2), and
-`srcMap`/`handFollow`/`foreRollSrc` injection all happen here. Loop moves are
-trimmed to their best pose-space cycle before export. The manifest carries
+injects `srcMap`/`handFollow`/`foreRollSrc`. The manifest carries
 each move's file, frame count, fps, loop flag and frame data — runtimes and
 the pre-bake tool consume it as-is and never re-derive which clips loop.
+The bake rejects missing or failed generation reports by default. Imported
+example NPZs can opt out explicitly with `--allow-ungated`; generated moves
+must never use that escape hatch, and an explicit failed report is always
+rejected. It also requires every move in the spec;
+use a smaller spec for a smaller deliverable (`--allow-missing` is reserved
+for deliberate partial previews).
 
 Frame data is derived per attack from the generation itself — never
 hand-authored:

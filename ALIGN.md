@@ -29,9 +29,9 @@ any motion source (role-keyed positions + quats per frame)
 
 | File | What it is | Environment |
 |---|---|---|
-| `rigmap.js` | bone → canonical role resolution (Mixamo ± prefix, Tripo, UE, VRoid, Meshy naming; spine-chain walk; full topology fallback for unnamed bones; partial-chain completion) | browser + node |
+| `rigmap.js` | bone → canonical role resolution (Mixamo ± prefix, Tripo, UE, VRoid, Meshy naming; spine-chain walk; full topology fallback for opaque names; partial-chain completion) | browser + node |
 | `retarget.js` | the two-skeleton retargeter (`Retargeter`, `loadGLBSkeleton`, `buildBoneOrder`, `SOMA_SRC`) | browser + node |
-| `align.js` | alignment & certification: probe mining, inverse recovery, gates, calibration, `certifyRig` | browser + node |
+| `align.js` | alignment & certification: probe mining, inverse recovery, gates, `certifyRig` | browser + node |
 | `glbskel.mjs` | GLB → `THREE.Bone` hierarchy + animation sampler without a browser (gltf-transform) | node only |
 | `certify.mjs` | certification CLI, writes `<char.glb>.retarget_certificate.json` | node only |
 | `selftest.mjs` | zero-asset self-test (synthetic rigs, procedural motion, sabotage case) | node only |
@@ -91,6 +91,7 @@ A motion source is a plain object of world-space joint data (Y-up meters):
 ```js
 {
   names: [string],          // joint names (index-aligned with pos/quat rows)
+  parents: [int, …],        // optional source hierarchy for visualization (-1 = root)
   fps: 30, numFrames: N, mode: 'clip name',
   rest:     [[x,y,z], …],   // world joint positions at the source's rest pose
   restQuat: [[x,y,z,w], …], // world joint orientations at rest (optional*)
@@ -152,7 +153,7 @@ measures:
 | `boneStretchPct` | ≤ 1 % | scale/FK corruption (aim transfer preserves lengths by construction) |
 | `footFlatDeg` | ≤ 6° | grounded feet tilting differently than the source's own sole tilt |
 | `footGroundFrac` | ≤ 0.10 | planted feet sinking/floating: wrong root scale, leg-proportion errors (also cycle-invisible) |
-| `twistFrac` | ≤ 1.0 | per-bone twist beyond anatomical limits (`TWIST_LIMITS`: UpLeg 100°, Leg 95°, Arm 130°, ForeArm 165°, Hand 92°) — candy-wrapper artifacts |
+| `twistFrac` | ≤ 1.0 | per-bone twist beyond anatomical limits (`TWIST_LIMITS`: UpLeg 100°, Leg 95°, Arm 130°, ForeArm 165°, Hand 92°) — candy-wrapper artifacts. Forearms are excluded when a clip explicitly copies source-authored human roll (`foreRollSrc`). |
 | `capsuleClearance` | ≥ 0.85 | limbs passing through the torso |
 | `roundTripMean` / `P95` | ≤ 0.05 / 0.10 m | transfer losses measurable by inverting the map: posed target → recovered source-skeleton joint positions vs the actual source frame |
 
@@ -160,12 +161,8 @@ The **inverse** (`recoverCanonicalPose`) uses only static calibration (bind
 frames, source segment lengths, root scale, yaw rebase): chain-root anchors ride
 their body frame rigidly, limb segments invert the aim map. Round-trip error is
 *necessary but not sufficient* — an invertible-but-wrong map scores zero, which
-is exactly why the absolute gates above exist. The battery is validated by
-sabotage tests: a mirrored map, a disabled yaw rebase, and a wrong root scale
-must each FAIL certification (see `selftest.mjs`).
-
-`calibrateHandClamp` measures the rest-pose wrist twist bias and tightens the
-hand clamp per character; it runs inside `certifyRig` by default.
+is exactly why the absolute gates above exist. The self-test includes a
+mirrored-map sabotage that must fail certification.
 
 Certificates look like:
 
@@ -174,7 +171,6 @@ Certificates look like:
   "ok": true,
   "rig": { "ok": true, "missing": [], "rolesResolved": 20, "spineChain": ["Spine02","Spine01","Spine"] },
   "scale": { "srcHipY": 0.8, "charHipY": 1.012, "scaleRoot": 1.16 },
-  "calibration": { "biasTwistDeg": 0, "handClampDeg": { "twist": 85 } },
   "probes": [ { "tag": "walk:kickL@223", "roundTripMean": 0.012, "...": "…" } ],
   "gates": { "sideConsistency": true, "boneStretchPct": 0, "footFlatDeg": 0.3,
              "footGroundFrac": 0.036, "twistFrac": 0.67, "capsuleClearance": 0.99,
@@ -189,11 +185,10 @@ Failures map to three repair tiers, cheapest first:
 
 1. **Role remap** — `rig.missing` non-empty or `sideConsistency` fired:
    oddly-named bones defeated the name patterns. Inspect `rig.map`, add or
-   correct entries (rigmap accepts explicit overrides), re-run. Structural
+   correct the relevant name pattern, and re-run. Structural
    quirks (extra roll bones, split spines) usually land here too.
-2. **Clamp/scale calibration** — `twistFrac` or `footGroundFrac` marginal:
-   check the character binds with flat, forward-pointing feet and uniform
-   armature scale; `calibrateHandClamp` handles wrist bias automatically.
+2. **Bind/scale check** — `twistFrac` or `footGroundFrac` marginal: check the
+   character binds with flat, forward-pointing feet and uniform armature scale.
 3. **Regenerate the rig** — anything structural that survives 1–2. With AI
    rigging services a re-rig costs cents; a manual repair costs hours and
    produces a one-off. Regeneration is almost always the right call.

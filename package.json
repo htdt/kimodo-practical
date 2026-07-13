@@ -15,7 +15,8 @@
     "kimodo-certify": "./certify.mjs"
   },
   "scripts": {
-    "test": "node selftest.mjs"
+    "test": "node selftest.mjs",
+    "test:python": "python3 -m unittest kimodo/test_tools.py"
   },
   "dependencies": {
     "three": "^0.160.0",
@@ -40,6 +41,7 @@
     "BAKE.md",
     "KIMODO.md",
     "INTEGRATE.md",
-    "kimodo/"
+    "kimodo/*.py",
+    "kimodo/*.json"
   ]
 }
