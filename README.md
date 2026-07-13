@@ -59,10 +59,16 @@ Two principles carry the whole design:
 | `prebake.mjs` | Stage 3 pre-bake for non-three.js engines: character GLB + baked manifest → same GLB with one glTF animation per clip + `rootmotion.json` (INTEGRATE.md §9) |
 | `selftest.mjs` | zero-asset self-test (synthetic rigs, procedural motion, sabotage cases) |
 | `motionbricks/` | Stage 2 generation tools (run inside the MotionBricks checkout): `posekit.py`, `movegen.py`, `bake_moves.py`, starter pose library, example move spec |
+| `KIMODO.md` | Stage 2 setup for the **NVIDIA Kimodo** human-skeleton source (recommended): install, gated-encoder workarounds, conventions, tooling manual |
+| `kimodo/` | Stage 2 tools for the Kimodo source: `kimogen.py` (text-prompted moves + stance bookends + gates), `bake_kimodo.py`, the validated MK move spec, axis validator, text-encoder setup |
 
 The JS scripts are the complete Stage 1 implementation and the runtime
-retarget layer used in Stage 3. The `motionbricks/` Python tools are the
-complete Stage 2 implementation for the MotionBricks source; BAKE.md also
+retarget layer used in Stage 3. The Python tools are the complete Stage 2
+implementation for **two motion sources** — NVIDIA Kimodo (`kimodo/`, human
+SOMA skeleton, text-prompted, recommended) and NVIDIA MotionBricks
+(`motionbricks/`, Unitree G1 robot skeleton, keyframe-driven) — both feeding
+the same hourglass waist: clips carry a `srcMap` and the retargeter drives
+any certified rig from either source with no runtime branching. BAKE.md also
 states the plain-data contracts (pose format, gate thresholds, clip format)
 any other motion source would have to meet.
 
@@ -100,9 +106,10 @@ rt.applyFrame(f);   // pose the rig for frame f, call per render tick
 You were probably sent here to add animated characters to a game. The order
 of work is fixed and each stage gates the next:
 
-1. Read **MOTIONBRICKS.md**. Install the motion generator (clone, LFS pull,
-   pip install, smoke test) and generate the example move set — you need
-   baked clips before you can certify anything.
+1. Pick a motion source and read its manual — **KIMODO.md** (human skeleton,
+   text-prompted; the default choice) or **MOTIONBRICKS.md** (G1 robot
+   skeleton, keyframe-driven). Install it and generate the example move set —
+   you need baked clips before you can certify anything.
 2. Read **ALIGN.md**. Certify every character rig. If certification fails,
    fix or regenerate the rig — do not proceed with an uncertified character;
    every downstream artifact would be built on a broken mapping.
@@ -124,7 +131,9 @@ a gate failure as a real defect, not noise.
 - **Y-up, meters**, feet flat and pointing forward at bind pose. Uniform
   armature scale (0.01-scaled FBX→GLB exports are handled).
 - Verified against Mixamo, Tripo3D, Meshy AI and UE-style rigs, plus the
-  Unitree G1 robot skeleton as a motion source; runs in the browser and node.
+  Unitree G1 robot and Kimodo SOMA-77 human skeletons as motion sources
+  (clips carry their source map — `srcMap` — so both play through the same
+  runtime); runs in the browser and node.
 
 ## License
 

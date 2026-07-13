@@ -19,16 +19,27 @@ keyframe poses        (JSON, per move)       → QA gates             frame data
 
 ## 0. Prerequisites
 
-- A motion source. The validated path — the one this repo ships working
-  tooling for — is **NVIDIA MotionBricks**, a keyframe-conditioned generative
-  inbetweener over the Unitree G1 skeleton (takes 4 context frames + a
-  4-frame target keyframe window, generates the motion between).
-  **MOTIONBRICKS.md is the complete download/install/run manual**; the
-  `motionbricks/` directory holds the tools referenced throughout this stage
-  (`posekit.py`, `movegen.py`, `bake_moves.py`, a starter pose library and an
-  example move spec). Alternatives that fit the same pipeline: cutting clips
-  from a mocap library, a text-to-motion model, hand-keyed animation —
-  anything that can emit the clip format below.
+- A motion source. Two validated paths ship with working tooling:
+  - **NVIDIA Kimodo** (recommended) — a text- and constraint-conditioned
+    diffusion model over the SOMA *human* skeleton (77 joints, head +
+    fingers). Moves are authored as text prompts; full-body keyframe
+    constraints bookend clips to a shared stance. **KIMODO.md is the
+    complete download/install/run manual**; the `kimodo/` directory holds
+    `kimogen.py`, `bake_kimodo.py` and the validated MK move spec.
+  - **NVIDIA MotionBricks** — a keyframe-conditioned generative inbetweener
+    over the Unitree G1 robot skeleton (takes 4 context frames + a 4-frame
+    target keyframe window, generates the motion between).
+    **MOTIONBRICKS.md is the complete download/install/run manual**; the
+    `motionbricks/` directory holds the tools referenced throughout this
+    stage (`posekit.py`, `movegen.py`, `bake_moves.py`, a starter pose
+    library and an example move spec).
+
+  Alternatives that fit the same pipeline: cutting clips from a mocap
+  library, another text-to-motion model, hand-keyed animation — anything
+  that can emit the clip format below. Where this document walks the
+  keyframe-first MotionBricks flow, the Kimodo flow replaces the pose
+  library + keyframe schedule with prompts + bookends (KIMODO.md §3 maps
+  the stages one-to-one).
 - A **certified character** to preview on (Stage 1, `certify.mjs` — see
   ALIGN.md). Never evaluate motion on an uncertified rig: you can't tell
   motion defects from transfer defects.

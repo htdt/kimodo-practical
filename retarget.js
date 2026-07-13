@@ -71,6 +71,20 @@ export const G1_SRC = {
   RightArm: 'right_shoulder_roll_link', RightForeArm: 'right_elbow_link', RightHand: 'right_wrist_yaw_link',
 };
 
+// SOMA source map (NVIDIA Kimodo somaskel77 output — a human skeleton, so the
+// anatomical joint centers ARE the named joints; anchors coincide with limbs
+// and fall back inside the constructor). Baked Kimodo clips carry this map in
+// their JSON (data.srcMap), so players don't need to know the source family.
+export const SOMA_SRC = {
+  Hips: 'Hips', Chest: 'Chest',
+  LeftHipAnchor: 'LeftLeg', RightHipAnchor: 'RightLeg',
+  LeftShoulderAnchor: 'LeftArm', RightShoulderAnchor: 'RightArm',
+  LeftUpLeg: 'LeftLeg', LeftLeg: 'LeftShin', LeftFoot: 'LeftFoot',
+  RightUpLeg: 'RightLeg', RightLeg: 'RightShin', RightFoot: 'RightFoot',
+  LeftArm: 'LeftArm', LeftForeArm: 'LeftForeArm', LeftHand: 'LeftHand',
+  RightArm: 'RightArm', RightForeArm: 'RightForeArm', RightHand: 'RightHand',
+};
+
 // limb roles: aim from a source joint toward its child joint (both given as
 // canonical source roles, resolved through the source map).
 // base: which transferred body-frame delta carries the bone's twist/roll while the
@@ -165,7 +179,7 @@ export class Retargeter {
     // source-skeleton map (canonical source role -> data joint name); default G1.
     // Anchor roles fall back to their limb roles when the source has no separate
     // anchor joints (a GLB-rig source: shoulder line = the Arm joints, etc.).
-    this.S = { ...(srcMap ?? G1_SRC) };
+    this.S = { ...(srcMap ?? data.srcMap ?? G1_SRC) };
     for (const [anchor, fb] of [['LeftHipAnchor', 'LeftUpLeg'], ['RightHipAnchor', 'RightUpLeg'],
       ['LeftShoulderAnchor', 'LeftArm'], ['RightShoulderAnchor', 'RightArm']]) {
       if (!(this.S[anchor] in this.idx)) this.S[anchor] = this.S[fb];
