@@ -164,7 +164,7 @@ function clampAngle(q, maxDeg) {
 }
 
 export class Retargeter {
-  constructor({ bones, orderedBones, hips, hipsParent, data, inPlace, rig, guards, handClampDeg, srcMap }) {
+  constructor({ bones, orderedBones, hips, hipsParent, data, inPlace, rig, guards, handClampDeg, srcMap, handFollow }) {
     this.bones = bones; this.orderedBones = orderedBones;
     this.rig = rig ?? resolveRig(orderedBones);
     this.R = this.rig.map;                    // role -> actual bone name
@@ -348,14 +348,23 @@ export class Retargeter {
       // authored-wrist G1 clips — both coincide, but real mocap wrist
       // deviations got applied about wrong axes: cocked "skewed fists" on
       // Kimodo clips, caught by qa_endeffectors.mjs.)
-      this.handM = {}; this.handT = {};
+      this.handM = {}; this.handT = {}; this.handRide = {};
       for (const name in this.handByBone) {
         const [sw, sf, foreName] = this.handByBone[name];
         this.handM[name] = this.bindWorldQ[foreName].clone().invert()
           .multiply(this._q(data.restQuat[this.idx[sf]]));
         this.handT[name] = this._q(data.restQuat[this.idx[sw]]).invert()
           .multiply(this.bindWorldQ[name]);
+        this.handRide[name] = this.bindWorldQ[foreName].clone().invert()
+          .multiply(this.bindWorldQ[name]);
       }
+      // wrist articulation gain: 1 = transfer the source wrist fully, 0 =
+      // the hand rigidly rides the forearm (bind relation). Mocap wrist
+      // channels read poorly on fingerless fist meshes — every twitch and
+      // roll shows as a "broken" fist — so human-mocap sources bake a low
+      // value (clip JSON handFollow) and keep only a hint of wrist life.
+      // Authored-wrist sources (the G1 set) default to 1.
+      this.handFollow = handFollow ?? data.handFollow ?? 1;
     }
     this.contBones = new Set(CONT_ROLES.map(r => this.R[r]).filter(n => n && bones[n]));
   }
@@ -521,6 +530,10 @@ export class Retargeter {
           .multiply(this._q(this.data.quat[f][this.idx[sf]]).invert())
           .multiply(this._q(this.data.quat[f][this.idx[sw]]))
           .multiply(this.handT[b.name]);
+        if (this.handFollow < 1) {
+          const ride = foreNow.clone().multiply(this.handRide[b.name]);
+          target = ride.slerp(target, this.handFollow);
+        }
         target = this._clampToParent(target, b, hRole, parentWorld);
       } else if (this.hasQuat && this.fullqByBone[b.name] && this.restQInv[this.fullqByBone[b.name][0]]) {
         // feet: true source ankle orientation, transferred pelvis-relative

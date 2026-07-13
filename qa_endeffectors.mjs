@@ -163,16 +163,18 @@ for (const mv of manifest.moves) {
         }
       }
 
-      // ---- hand skew: |char wrist bend - source wrist bend|, both raw
-      // angles between the knuckle direction and the forearm axis. The bake
-      // anchors hands for ABSOLUTE bend tracking (straight source wrist ↔
-      // straight character hand), so the two bends must match directly —
-      // a scalar comparison, free of rotation-axis/twist ambiguity.
+      // ---- hand skew: |char wrist bend - handFollow×(source wrist bend)|,
+      // raw angles between the knuckle direction and the forearm axis. The
+      // bake anchors hands for ABSOLUTE bend tracking (straight source wrist
+      // ↔ straight character hand) scaled by the clip's wrist articulation
+      // gain (handFollow; 1 = full transfer) — a scalar comparison, free of
+      // rotation-axis/twist ambiguity.
       const { handBindQ, handRefDir } = fix[side];
       if (hand && handBindQ && sMid !== undefined) {
         const srcFore = v3(motion.pos[f][sWrist]).sub(v3(motion.pos[f][sFore])).normalize();
         const srcHand = v3(motion.pos[f][sMid]).sub(v3(motion.pos[f][sWrist])).normalize();
-        const devSrc = deg(Math.acos(THREE.MathUtils.clamp(srcHand.dot(srcFore), -1, 1)));
+        const devSrc = (motion.handFollow ?? 1) *
+          deg(Math.acos(THREE.MathUtils.clamp(srcHand.dot(srcFore), -1, 1)));
         const charFore = wpos(hand).sub(wpos(fore)).normalize();
         const got = handChild
           ? wpos(handChild).sub(wpos(hand)).normalize()

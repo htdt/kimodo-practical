@@ -127,6 +127,17 @@ visibly skewed fists and toes-up feet. Two facts to bake by:
 All three mistakes are caught mechanically by `qa_endeffectors.mjs` (§4) —
 run it after any bake or retargeter change.
 
+**Wrist articulation gain (`handFollow`).** Even with correct anchors and
+axes, raw mocap wrist channels read poorly on game hands: every twitch,
+roll, and stylistic flex of the performer shows on a fingerless fist mesh as
+a "broken" wrist (the balancing hand during a side kick was the reported
+case). This is the same lesson the G1 pipeline learned (it *authored* wrists
+and discarded model output entirely). The clip JSON carries
+`handFollow` — the retargeter slerps between the hand rigidly riding the
+forearm (0) and the full source wrist (1). `bake_kimodo.py` bakes **0.3**:
+hands stay aligned with the forearm, keeping a hint of wrist life. Authored-
+wrist sources (the G1 set) omit the key and default to full transfer.
+
 ## 3. The tooling in `kimodo/` (this repo)
 
 BAKE.md's contract, reimplemented for a text-first generator:

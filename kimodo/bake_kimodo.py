@@ -151,6 +151,10 @@ def main():
             "restQuat": np.round(rest_quat, 5).tolist(),
             "srcMap": SOMA_SRC,
             "source": "kimodo-soma-rp-v1.1",
+            # wrist articulation gain for the retargeter: mocap wrist
+            # channels read as "broken fists" on fingerless fist meshes —
+            # keep 30% of the source wrist, ride the forearm for the rest
+            "handFollow": 0.3,
         }
         with open(os.path.join(a.web_dir, f"{name}.json"), "w") as fp:
             json.dump(out, fp)
