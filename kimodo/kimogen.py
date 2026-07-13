@@ -147,7 +147,16 @@ def frame_data(j, r, idx, mv, fps):
     while b < len(s) - 1 and s[b + 1] > thr * 0.5:
         b += 1
     active = [int(a), int(min(b + 2, len(s)))]
-    return {"startup": int(a), "active": active,
+    # contact = the frame the strike visually lands: max extension of the
+    # striking tip from the root inside the active window. The active window
+    # alone is not enough for impact timing — it opens while the limb is
+    # still travelling (generated motion has real wind-up), so events synced
+    # to active[0] fire visibly early. Games should register the hit no
+    # earlier than ~contact-2 and one-shot effects (damage, sfx, hitstop)
+    # exactly at contact.
+    ext = np.linalg.norm(j[:, idx[tips[tip]]] - r, axis=-1)
+    contact = active[0] + int(ext[active[0]:active[1] + 1].argmax())
+    return {"startup": int(a), "active": active, "contact": int(contact),
             "recovery": int(len(s) + 1 - active[1]),
             "strike_tip": tips[tip], "peak_speed": round(float(s[pk]), 2),
             "height": mv.get("height")}

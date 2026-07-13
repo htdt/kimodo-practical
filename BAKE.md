@@ -260,11 +260,21 @@ it:
 
 - **startup** = frames until the first keyframe arrival (the apex),
 - **active** = a small window around that arrival,
+- **contact** = the single frame the strike visually lands — max extension
+  of the striking tip from the root within the active window,
 - **recovery** = the rest.
 
 Sanity-check against strike-limb tip velocity peaks. Store per move in the
 manifest. Stage 3 builds hit detection, reach, and interruption rules purely
 from this data.
+
+`contact` exists because the active window alone is not precise enough for
+impact events: generated motion has real wind-up, so a speed-derived window
+opens while the limb is still travelling — measured on the MK set, visual
+impact falls 5–9 frames *after* `active[0]`, usually right at the window's
+end. Emit it from the generator (`kimodo/kimogen.py` does; for
+keyframe-driven sources compute it the same way from baked positions) and
+have Stage 3 sync damage/hitstop/sfx to it (INTEGRATE.md §6).
 
 ## 7. Visual QA rubric
 

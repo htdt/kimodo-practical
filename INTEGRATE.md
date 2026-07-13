@@ -134,9 +134,22 @@ covered by one mechanism.
 Everything timing- and range-related derives from the bake outputs:
 
 - **Timing**: `frame_data` per attack (`startup`, `active: [a,b]`,
-  `recovery`). An attack can only connect while the cursor is inside the
-  active window; check *every* active frame (a target can move into range
-  mid-swing); latch a hit flag so one swing hits once.
+  `contact`, `recovery`). An attack can only connect while the cursor is
+  inside the hot window; check *every* hot frame (a target can move into
+  range mid-swing); latch a hit flag so one swing hits once.
+- **Impact precision — use `contact`, not `active[0]`.** Generated motion
+  has real wind-up: the speed-derived active window opens while the limb is
+  still travelling, typically 5–9 frames (~0.2–0.3 s) *before* the strike
+  visually lands. Damage, hitstop, sfx, and particles synced to `active[0]`
+  read as phantom hits. `contact` (max strike-tip extension, emitted by the
+  generators) is the visual impact frame: make the hot window
+  `[max(active[0], contact−2), active[1]]` and fire one-shot impact effects
+  at the frame the hit actually registers. Fall back to `active[0]` for
+  clips whose frame data predates the field. Two more precision rules:
+  express every window in **clip frames checked against the cursor**, never
+  wall-clock time — playback speed (§4) rescales frames-to-seconds per move;
+  and after retuning speeds or regenerating a clip, re-watch one hit per
+  attack at game speed — timing regressions are invisible to pose-space QA.
 - **Reach**: derive per attack at load — max forward offset of any strike-tip
   joint from the pelvis over the active window, × `rt.scaleRoot`, + a target
   body allowance, **floored just above your minimum entity separation**. The

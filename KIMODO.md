@@ -182,7 +182,7 @@ python bake_kimodo.py --web ../web/moves_kimodo
 | duration | pinned in 4-frame tokens (24-frame floor) | seconds, free (10 s max per prompt) |
 | cleanup | external contact-lock IK required (teacher skates 0.34 m/s) | built-in post-process (`MotionCorrection`); measured skate 0.003–0.03 m/s |
 | gates | keyframe-hit error, skate, jitter, limits | travel intent, apex (kick height / root rise/dip/floor), stance-match at both ends, skate, jitter |
-| frame data | derived from keyframe-arrival frames | derived from strike-limb tip speed peaks |
+| frame data | derived from keyframe-arrival frames | derived from strike-limb tip speed peaks, plus `contact` — the impact frame (max tip extension; sync damage/sfx to it, the active window opens ~5–9 frames before the hit visually lands) |
 
 The stance-bookend trick replaces the G1 flow's "every move starts and ends
 on the stance keyframe" design rule: constrain frames `[0, T-1]` to the
