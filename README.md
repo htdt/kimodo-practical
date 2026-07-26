@@ -130,7 +130,14 @@ of work is fixed and each stage gates the next:
    frame data.
 4. Read **INTEGRATE.md**. Wire the clips into the game with the three-layer
    architecture (clip / entity / game). Build the deterministic QA harness
-   *before* tuning gameplay — it is what makes the rest debuggable.
+   *before* tuning gameplay — it is what makes the rest debuggable, and if
+   the character stands on, holds or aims at anything, the checks on *that
+   relationship* (§7a) come before any joint range.
+
+If the game authors its own key poses and wants Kimodo for the motion between
+them, read **ANIMATION_AGENT.md** end to end before step 3: that hybrid
+changes what you write in the spec and adds a gate after step 4 that neither
+constraint adherence nor `qa_constraints` performs.
 
 Throughout: prefer regenerating a failed artifact over patching around it at
 runtime; every gate threshold in these docs was validated in practice — treat

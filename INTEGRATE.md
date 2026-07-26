@@ -201,6 +201,48 @@ anything the metrics flag): apex pose visible? feet planted in stance? no
 wrist flips or knee pops at state changes? interactions plausible at the
 distance they register? root travel matches intent?
 
+### 7a. Gate the character against its prop, and gate a derivative
+
+The metrics above are intrinsic to the body — NaN, travel, hip deltas, per-tick
+rotation step. Two whole classes of defect are invisible to them, and both are
+cheap to close.
+
+**Relational checks.** A character can stand on its board like a skier, hold
+its rifle across its chest, or face away from its opponent while every
+intrinsic check passes: knee below hip, elbow in range, no stretch, left
+shoulder on the left — all true, none of them looking at the body's
+relationship to the thing it is standing on or holding. Measure in **the
+prop's frame** (it keeps working when the prop is banked or upside down) and
+check the relationship *first*: the body axis against the prop axis, each
+declared contact on its named point, the prop's own attitude, the direction of
+travel. Then the joint ranges.
+
+Two rules that follow from it, both expensive on their own:
+
+- **Shape bounds cannot detect the wrong clip playing.** Poses within one
+  activity resemble each other, so a different move satisfies a clip's hip
+  height, knee angle and torso pitch on most frames. What no other move can
+  fake is a **contact** — a hand on a specific rail of a specific board, a
+  magazine at a specific well. Assert contacts on clip-driven frames.
+- **Judge a pose under the body transform the move happens in.** A gate that
+  evaluates everything upright will demand shapes that only being upright
+  requires. A pose that only occurs inclined 30° into a turn must be gated
+  inclined 30°, from the same shared constant the runtime uses, or the gate
+  and the game are each right about a different character.
+
+**Derivatives.** "The hands move abruptly" is not a property of any frame —
+every frame is a legal pose — so no per-frame battery can see it. One line
+finds the whole class: **end-effector speed in the character's own frame**,
+per tick (own frame, or locomotion and rotation swamp the signal).
+
+```
+[jerk] t=16.03 clip=-  L=37.62 R=43.76 m/s      // ~3 m/s is ordinary arm motion
+```
+
+On one shipped move set that single metric named three unrelated causes in one
+pass: a hard writer handover (§8.7), clips played at up to 10× (§8.9), and a
+contact gate behaving as a switch (§8.10).
+
 ## 8. Gotchas index (each cost a real debug cycle)
 
 1. **Vertical amplification scales above source *rest* height, not stance** (§3).
@@ -212,6 +254,45 @@ distance they register? root travel matches intent?
    (BAKE.md §7).
 6. **QA scenarios must actually exercise the interaction** — spawn entities in
    reach or every hit test silently passes as a whiff.
+7. **A change of pose AUTHORITY is a crossfade, not a cut.** A baked clip and
+   an authored/procedural pose are two writers of one skeleton, and switching
+   between them mid-move is a one-frame teleport — 43.8 m/s on a hand against
+   ~3 m/s for ordinary arm motion. Snapshot every bone local rotation *before*
+   anything writes to the skeleton this tick, then blend out of the snapshot
+   over ~0.2 s. The trap inside the fix: with the snapshot refreshed each
+   tick, blend **progress** is not the per-tick slerp factor — feeding it in
+   directly compounds into an accelerating blend that dumps the difference
+   into the last few frames, i.e. the snap you were removing. Convert progress
+   to the fraction of what remains: `k = (S(u) − S(u_prev)) / (1 − S(u_prev))`.
+8. **The gate must drive the clip the way the game drives it.** The most
+   expensive bug on a shipped project: the gate scrubbed clips through the raw
+   animation player (no crossfade, because a gate wants a deterministic
+   frame), the game seeked them through a crossfading wrapper, and Godot
+   drains a crossfade off the mixer's own delta — which a *seeked* clip
+   freezes. The timer never drained, the outgoing clip kept full weight, and
+   **every seeked beat of the run rendered the previous move for its whole
+   length** while every gate passed. Two engine-agnostic consequences: play
+   and seek are different code paths and both need gating, and a mixer whose
+   clock you freeze may still own timers you have to drain by hand (Godot
+   additionally scales that timer by `speed_scale`, which a gate holding a
+   frame still sets to 0).
+9. **Slice clips, do not stretch them.** §4's speed multipliers are for
+   snappier timing, not for making a clip fit an arbitrary window. Mapping a
+   whole clip onto a shorter beat ran one at 10× on a review reel. Name the
+   *slice* of the clip a beat plays (`u0..u1`) and print the seconds-of-clip
+   per second-of-screen ratio at startup, because beat times get retuned for
+   pacing and clip lengths do not move with them.
+10. **A contact the limb cannot reach must be released, not stretched at** —
+   and fade it over a *wide* band (full reach out to ~2.4× it). A narrow band
+   makes the contact a switch: on the tick the body finally came in range the
+   fist crossed 0.87 m in one step. Downstream — particles, audio, the audit —
+   must read the weight the solver **achieved**, not the one it was asked for,
+   or dust puffs out of thin air under a hand half a metre off the ground.
+11. **Some moves cannot be clip-driven at all.** §3 places a clip-driven body
+   by its root; a game that instead pins a contact to a prop (feet to a deck)
+   has made that placement rule part of what a clip *means*, and a move whose
+   point is breaking that contact cannot come from a clip. Make the placement
+   rule a per-pose property, blend it like any other, and author those moves.
 
 ## 9. Porting to other engines (Godot / Bevy / Babylon / …)
 
