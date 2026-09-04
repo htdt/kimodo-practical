@@ -18,11 +18,29 @@ import math
 import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DEMO = os.environ.get(
-    "KIMODO_DEMO",
-    os.path.expanduser("~/Downloads/ani_test/kimodo/kimodo/assets/demo/examples/kimodo-soma-rp"),
-)
 FPS = 30
+
+
+def demo_examples_dir():
+    """The upstream demo examples: $KIMODO_DEMO, else the installed Kimodo
+    package's own assets (kimodo/assets/demo/examples/kimodo-soma-rp), else
+    None."""
+    env = os.environ.get("KIMODO_DEMO")
+    if env:
+        return env
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("kimodo.skeleton")
+    except (ImportError, ValueError):
+        spec = None
+    if not spec or not spec.origin:
+        return None
+    pkg = os.path.dirname(os.path.dirname(spec.origin))
+    path = os.path.join(pkg, "assets", "demo", "examples", "kimodo-soma-rp")
+    return path if os.path.isdir(path) else None
+
+
+DEFAULT_DEMO = demo_examples_dir()
 
 
 def load(demo, name):

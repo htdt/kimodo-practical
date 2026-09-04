@@ -58,7 +58,9 @@ Each clip also carries:
   are always baked at 1.0.
 - `contacts` + `contactJoints` — Kimodo's per-frame foot-contact
   **predictions** with their explicit joint mapping. QA and cleanup evidence,
-  never authored targets.
+  never authored targets. The constraint IK reads them for one thing only:
+  how long an *authored* foot key is held (the planted-foot hold,
+  INTEGRATE.md §1) — a span, never a position.
 - `constraints` — the resolved constraint records for every authored
   constraint, re-expressed in the clip's canonical frame with the exact
   rigid transform + loop trim the motion got: family, authoring source,
@@ -119,8 +121,11 @@ reference). Per move:
 - `travel` — the move's net-root-displacement intent, gated in world space:
   `"fwd"`/`"back"` on sign, `"in_place"` on magnitude, `null` = don't gate.
 - `apex` — the move's defining physical moment, gated absolutely:
-  `ankle_height` (kicks), `root_rise` (jumps), `root_dip` (crouches, sweeps),
-  `root_floor` (knockdowns), bounds in meters. One bound is required per kind
+  `ankle_height` (kicks), `root_rise` (jumps), `root_dip` (crouches),
+  `foot_excursion` (sweeps, lunges, steps: the farthest either foot travels
+  horizontally from its frame-0 spot), `root_floor` (knockdowns), bounds in
+  meters. Gate the moment that *is* the move: a sweep gated on `root_dip`
+  shipped as a crouch whose feet moved 2.5 cm. One bound is required per kind
   (`max` for `root_floor`, `min` for the rest); the other is optional and caps
   the gate from the far side — e.g. `{"kind": "ankle_height", "min": 0.4,
   "max": 0.9}` rejects both statues and karate-kick winners.
@@ -231,9 +236,9 @@ passes, `kimogen.py` exits nonzero, writes only the diagnostic report, and
 removes any stale NPZ for that move so a previous generation cannot be baked
 by accident.
 
-**Gate what you actually care about, in world space.** A cautionary tale
-(learned on a previous motion source, still the operating rule): a "jump"
-selected by smoothness gates alone never left the ground — foot-skate gates
+**Gate what you actually care about, in world space.** The operating rule,
+learned the hard way: a "jump" selected by smoothness gates alone never left
+the ground — foot-skate gates
 *reward* staying planted, and a pelvis-relative error metric can't see root
 height. Every move's defining physical property (flight, displacement, floor
 time, apex height) gets an absolute world-space gate, and those are **hard
@@ -304,7 +309,7 @@ and check:
 
 A weak move is **a prompt/spec edit + regenerate** (~a minute), never a
 runtime patch. Run `qa_constraints.mjs` (stage-separated constraint accuracy:
-authored → SOMA → unguarded rig → shipped rig, plus determinism/flip/skate
+authored → SOMA → raw rig → shipped rig, plus determinism/flip/skate
 gates) and `qa_endeffectors.mjs` (perceptual foot-pitch/wrist-bend gates)
 after any bake — together they catch rest-anchor skew, constraint misses,
 and transfer regressions mechanically, per character × move set.

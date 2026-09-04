@@ -52,8 +52,9 @@ The battery mines its probe poses from whatever clips you give it, so clips
 that never bend a knee can't certify knees. The source role map comes from
 `--srcmap map.json`, or a `srcMap` field on the first clip, or defaults to the
 SOMA skeleton. All probe clips in one run must share the same `handFollow`
-value (certify rejects a mix) — certify bookended clips (`1.0`) and
-prediction-only clips (`0.3`) in separate runs.
+value (certify rejects a mix) — certify clips with authored hand targets
+(`1.0`) and prediction-only clips, stance-bookended ones included (`0.3`),
+in separate runs.
 
 Retarget in the browser (any humanoid GLB, any motion source):
 
@@ -137,18 +138,13 @@ and cannot invert:
   proportions.
 - **No runtime guards.** The transfer is unguarded, stateless, and
   deterministic: applying frame `f` yields the same pose under sequential
-  playback, direct seek, any speed, or offline baking. The historical guards
-  (hand twist/swing clamp, torso-capsule displacement, 40°/frame continuity
-  slew, ground lift) were ablated on the regenerated move set across two
-  certified rigs and deleted — none had a reproducible benefit after the
-  rest-anchor fix, and the temporal ones made poses depend on playback
-  history (measurements: `evidence/README.md`). What used to be silently
-  corrected is now *measured*: torso clearance, ground penetration, branch
-  flips, and contact-frame skate are QA metrics (`qametrics.mjs`,
-  `qa_constraints.mjs`) and certification gates.
-- The only remaining transfer modifier is the per-clip **`handFollow`**
-  stylization gain (see KIMODO.md); source forearm roll is automatic for any
-  clip with quaternions.
+  playback, direct seek, any speed, or offline baking. Torso clearance,
+  ground penetration, branch flips, and contact-frame skate are *measured* —
+  QA metrics (`qametrics.mjs`, `qa_constraints.mjs`) and certification gates —
+  never silently corrected (the ablation behind this: `evidence/README.md`).
+- The only transfer modifier is the per-clip **`handFollow`** stylization
+  gain (see KIMODO.md); source forearm roll is automatic for any clip with
+  quaternions.
 
 ## Certification battery
 

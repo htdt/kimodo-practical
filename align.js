@@ -317,12 +317,11 @@ export function measureGates(rt, f, grounded) {
   // twist vs bind, about each bone's own bind axis, as a fraction of the
   // role's anatomical limit
   for (const role of LIMB_ROLES) {
-    // quaternion clips carry source-authored forearm roll (the single
-    // quaternion path). The target copies human mocap pronation/supination;
-    // measuring it against a target-bind heuristic can report ~180° for an
-    // ordinary guard pose and false-reject the reference character. Other
+    // quaternion clips carry source-authored forearm roll: the target copies
+    // human mocap pronation/supination, and measuring that against a
+    // target-bind heuristic reports ~180° for an ordinary guard pose. Other
     // limb roles, and forearms of position-only sources, remain gated.
-    if (rt.foreRollSrc && role.endsWith('ForeArm')) continue;
+    if (rt.hasQuat && role.endsWith('ForeArm')) continue;
     const name = R[role];
     if (!name || !rt.bones[name]) continue;
     const limit = TWIST_LIMITS[role.replace(/^(Left|Right)/, '')];

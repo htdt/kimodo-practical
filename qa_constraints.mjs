@@ -6,13 +6,12 @@
 //   stage 1  authored target -> final SOMA output   (from the baked clip's
 //            resolved records vs its own pos/quat channels; root2d adherence
 //            comes from the generation report through the manifest)
-//   stage 2  SOMA output -> UNGUARDED target rig    (corrected anchors +
-//            world-axis mapping, all guards/damping/smoothing off; rotation
-//            error against the FULL source demand — never scaled by
-//            handFollow — plus round-trip position recovery)
-//   stage 3  unguarded -> shipped                   (the delta each RETAINED
-//            style modifier introduces — after the guard cleanup that is
-//            handFollow only; deleted guards: evidence/README.md)
+//   stage 2  SOMA output -> RAW target rig          (corrected anchors +
+//            world-axis mapping, handFollow = 1; rotation error against the
+//            FULL source demand — never scaled by handFollow — plus
+//            round-trip position recovery)
+//   stage 3  raw -> shipped                         (the delta the per-clip
+//            handFollow stylization introduces)
 //   stage 4  final character -> mapped authored target (with constraint IK;
 //            gates: pos p95<=0.02m max<=0.04m, rot p95<=5deg max<=10deg)
 //
@@ -45,7 +44,7 @@ if (!charPath || !movesDir || (jsonIdx >= 0 && (!jsonOut || jsonOut.startsWith('
   process.exit(2);
 }
 
-// ---- accuracy contract (task gates)
+// ---- accuracy contract (gates)
 const G = {
   somaPosMax: 0.005, somaRotMaxDeg: 2.0,          // stage 1, per authored EE frame
   rootXZMax: 0.02,                                 // stage 1, root waypoints (from gen report)
@@ -154,7 +153,7 @@ for (const mv of manifest.moves) {
       };
     }
 
-    // -------------------------------------- stage 2: unguarded transfer rig
+    // -------------------------------------- stage 2: raw transfer rig
     const baseline = captureRun(target, clip, { config: baselineOptions(clip) });
     out.baselineConfig = baseline.config;
     out.stage2 = { fidelity: sourceFidelity(baseline) };
@@ -180,8 +179,7 @@ for (const mv of manifest.moves) {
       if (!s?.rot) throw new Error(`stage2 fidelity for ${role} could not be measured`);
     }
 
-    // -------------- stage 3: deltas of each RETAINED modifier vs baseline
-    // (the deleted guards' recorded deltas: evidence/README.md)
+    // -------------- stage 3: delta of each shipped modifier vs the raw baseline
     const interventions = {
       handFollow: { config: { ...baselineOptions(clip), handFollow: clip.handFollow ?? 0.3 } },
     };
@@ -190,7 +188,7 @@ for (const mv of manifest.moves) {
       const cap = captureRun(target, clip, { config: spec.config });
       const delta = captureDelta(baseline, cap);
       out.stage3[name] = { maxRotDeg: delta.maxRotDeg, maxPosM: delta.maxPosM };
-      // a guard that moves an authored constrained frame is a reported
+      // a modifier that moves an authored constrained frame is a reported
       // conflict, never a silent adjustment
       for (const rec of eeRecords) {
         const a = baseline.rows[rec.frame].roles[rec.role];
@@ -316,7 +314,7 @@ for (const [name, c] of Object.entries(report.clips)) {
     pad(s4rot === null ? '-' : s4rot.toFixed(2), 11) +
     pad(flips, 7) + pad(c.determinism?.maxRotDeg ?? '-', 9) + skD);
 }
-console.log('\nstage-3 guard deltas (max over clips, deg / m):');
+console.log('\nstage-3 modifier deltas (max over clips, deg / m):');
 const agg = {};
 for (const c of Object.values(report.clips)) {
   for (const [g, d] of Object.entries(c.stage3 ?? {})) {

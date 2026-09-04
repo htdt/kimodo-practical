@@ -8,12 +8,15 @@
 # Reproducibility: model Kimodo-SOMA-RP-v1.1, seed 42, 8 samples,
 # 100 denoising steps, root margin 0.01 m. Reports land in ../evidence/.
 #
-# Usage: PY=<kimenv python> FIGHTER=<fighter.glb> CHAR2=<char2.glb> ./run_e2e.sh
+# Usage: FIGHTER=<fighter.glb> CHAR2=<char2.glb> [PY=<kimenv python>] ./run_e2e.sh
+#   PY defaults to $KIMODO_HOME/kimenv/bin/python; the two certified reference
+#   rigs must be given explicitly.
 set -euo pipefail
 cd "$(dirname "$0")"
-PY=${PY:-$HOME/Downloads/ani_test/kimenv/bin/python}
-FIGHTER=${FIGHTER:-$HOME/Downloads/ani_test/web/fighter.glb}
-CHAR2=${CHAR2:-$HOME/Downloads/ani_test/char2/Meshy_AI_Harbinger_of_the_With_biped_Character_output.glb}
+PY=${PY:-${KIMODO_HOME:+$KIMODO_HOME/kimenv/bin/python}}
+PY=${PY:-python3}
+: "${FIGHTER:?set FIGHTER=<fighter.glb> (certified reference rig)}"
+: "${CHAR2:?set CHAR2=<char2.glb> (certified reference rig with shorter arms)}"
 
 $PY make_e2e_spec.py
 # This driver must never certify stale generation output. Clear only its own

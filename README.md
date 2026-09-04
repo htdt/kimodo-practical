@@ -62,18 +62,18 @@ Two principles carry the whole design:
 | `INTEGRATE.md` | Stage 3 manual: runtime layers, root motion, combat timing, QA |
 | `ANIMATION_AGENT.md` | one-page decision guide for authoring agents: which control (text / pose / end-effector / waypoints / path / combinations) to use when |
 | `rigmap.js` | bone → canonical-role resolution for arbitrary humanoid rigs |
-| `retarget.js` | the two-skeleton position-based retargeter (unguarded, deterministic; the guard ablation and removals: `evidence/README.md`) |
+| `retarget.js` | the two-skeleton position-based retargeter (deterministic, no runtime guards; the ablation behind that: `evidence/README.md`) |
 | `ik.js` | target-space constraint IK: analytic two-bone solve that lands authored hand/foot targets exactly on any certified rig, deterministic under seek/speed/bake |
 | `align.js` | probe mining, inverse recovery, gates, `certifyRig` |
 | `glbskel.mjs` | GLB → bone hierarchy + animation sampler in node (no browser) |
 | `certify.mjs` | certification CLI, writes `<char.glb>.retarget_certificate.json` |
 | `prebake.mjs` | Stage 3 pre-bake for non-three.js engines: character GLB + baked manifest → new GLB with one glTF animation per clip + `rootmotion.json` (INTEGRATE.md §9) |
 | `qametrics.mjs` | shared measurement machinery: captures, fidelity/accuracy/kinematics/clearance/skate metrics |
-| `qa_constraints.mjs` | stage-separated constraint accuracy gates: authored target → final SOMA → unguarded rig → shipped rig, with determinism, branch-flip, and contact-skate gates; JSON + table output |
+| `qa_constraints.mjs` | stage-separated constraint accuracy gates: authored target → final SOMA → raw rig → shipped rig, with determinism, branch-flip, and contact-skate gates; JSON + table output |
 | `qa_endeffectors.mjs` | perceptual end-effector gates: foot flatness + wrist-bend tracking (raw transfer, with the stylization delta reported separately) |
 | `ablate.mjs` | transfer-modifier ablation runner — the evidence generator behind keep/delete decisions |
 | `selftest.mjs` / `selftest_constraints.mjs` | zero-asset self-tests (synthetic rigs, procedural motion, IK, determinism, sabotage cases) |
-| `evidence/` | recorded ablation/QA evidence + reproduction commands for every guard decision |
+| `evidence/` | recorded ablation/QA evidence + reproduction commands behind every transfer decision |
 | `kimodo/` | Stage 2 generation tools (run against a Kimodo install): `kimogen.py` (text + full constraint authoring + adherence gates), `kimoconstraints.py` (schema validation, conflict detection, FK resolution, canonicalization), `bake_kimodo.py`, the validated MK move spec, the deterministic e2e constraint suite (`make_e2e_spec.py`, `run_e2e.sh`), axis validator, text-encoder setup |
 
 The JS scripts are the complete Stage 1 implementation and the runtime

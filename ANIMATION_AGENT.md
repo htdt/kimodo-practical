@@ -40,9 +40,10 @@ and tested; `kimodo/test_constraints.py` validates this vocabulary.
    exempt), keep post-processing on, and give the move enough `duration`
    for targets to be reachable (< 5 m/s root travel between pinned frames).
 7. Vocabulary discipline: hand/foot **targets are authored constraints**;
-   **foot contacts are model predictions** (QA evidence, never inputs);
-   unconstrained limbs are predictions. Don't describe the three as
-   equivalent.
+   **foot contacts are model predictions** (QA evidence — and, for an
+   authored foot key that lands inside a contact run, the span the runtime
+   IK holds it over; never a target); unconstrained limbs are predictions.
+   Don't describe the three as equivalent.
 8. For every generated move, state which controls you selected and why,
    then check the generation report's constraint-adherence gates and the
    motion-quality gates before accepting

@@ -32,7 +32,13 @@ neural code, zero hand-tuned motion constants.**
   `ConstraintIK` (`ik.js`) built from the same retargeter; call
   `ik.apply(f)` right after `rt.applyFrame(f)` — it lands authored hand/foot
   targets exactly at their key frames (deterministic blend windows derived
-  from the constraint data, so seeking and speed changes stay exact):
+  from the constraint data, so seeking and speed changes stay exact). A foot
+  key that falls inside one of the clip's predicted contact runs is **held**
+  across the whole run and blended only while the foot is in the air:
+  blending toward a key on a planted foot drags the foot out and back by
+  the rig's proportion mismatch — 5.4 cm at up to 0.34 m/s on a certified
+  Tripo rig, i.e. visible skate on exactly the frames the source keeps still
+  (`evidence/README.md`). The hold is static clip data, so determinism holds:
 
   ```js
   import { ConstraintIK } from './ik.js';
@@ -105,11 +111,9 @@ Play clips faster instead of regenerating: attacks ~1.4–1.6×, reactions
 The retargeter is stateless per frame: `applyFrame(f)` produces the same pose
 whether frames run sequentially, skip at any speed, seek directly, or bake
 offline — so speed changes need no special handling and clip switches need no
-reset. (The old temporal continuity guard and its intermediate-frame
-workaround are gone; the guard never engaged on the representative move set
-and made poses history-dependent — `evidence/README.md`.) Clips with authored
-constraints keep this property through the constraint IK: solve weights come
-from constraint frame data, never from playback history.
+reset. Clips with authored constraints keep this property through the
+constraint IK: solve weights come from constraint frame data, never from
+playback history.
 
 ## 5. State machine over the clip set
 

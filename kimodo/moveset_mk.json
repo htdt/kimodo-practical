@@ -127,8 +127,8 @@
    "strike": "foot",
    "height": "low",
    "apex": {
-    "kind": "root_dip",
-    "min": 0.2
+    "kind": "foot_excursion",
+    "min": 0.5
    }
   },
   {

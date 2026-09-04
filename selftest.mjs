@@ -149,25 +149,13 @@ let mixedSettingsRejected = false;
 try { mineProbeFrames([motion, { ...motion, handFollow: 0.3 }], srcMap); }
 catch { mixedSettingsRejected = true; }
 check('probe mining rejects mixed transfer settings', mixedSettingsRejected);
-// the guards and the foreRollSrc switch were DELETED after the ablation
-// (evidence/README.md); passing them must fail loudly, not silently change behavior
-let removedOptionRejected = false;
-try {
-  new Retargeter({ ...tgtT, data: motion, srcMap, guards: { continuity: true } });
-} catch { removedOptionRejected = true; }
-check('retargeter rejects the removed guards option', removedOptionRejected);
-let removedRollRejected = false;
-try {
-  new Retargeter({ ...tgtT, data: motion, srcMap, foreRollSrc: true });
-} catch { removedRollRejected = true; }
-check('retargeter rejects the removed foreRollSrc switch', removedRollRejected);
-check('source forearm roll is automatic for quaternion clips',
-  new Retargeter({ ...tgtT, data: motion, srcMap }).foreRollSrc === true);
+check('quaternion clips are detected (source forearm roll path)',
+  new Retargeter({ ...tgtT, data: motion, srcMap }).hasQuat === true);
 {
   const positionOnly = { ...motion };
   delete positionOnly.quat; delete positionOnly.restQuat;
   check('position-only clips fall back to body-frame forearm roll',
-    new Retargeter({ ...tgtT, data: positionOnly, srcMap }).foreRollSrc === false);
+    new Retargeter({ ...tgtT, data: positionOnly, srcMap }).hasQuat === false);
 }
 resetBindPose(tgtT);
 

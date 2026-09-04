@@ -15,7 +15,7 @@ Besides the motion channels, each baked clip preserves:
   family/source/provenance, directly usable by runtime IK and constraint QA
   without reloading the authoring skeleton or repeating FK.
 
-Usage: kimenv/bin/python bake_kimodo.py [--in out/moves] [--web ../web/moves_kimodo]
+Usage: kimenv/bin/python bake_kimodo.py [--in out/moves] [--web out/web]
 No GPU needed.
 """
 import argparse
@@ -109,10 +109,15 @@ def has_authored_hand_rotation(constraints):
     """Whether baked stylization must yield to an exact authored wrist.
 
     End-effector records name one role directly; fullbody records carry their
-    constrained roles in the resolved `ee` map.
+    constrained roles in the resolved `ee` map. The stance bookend is not an
+    authored wrist: it is lifted from the idle's medoid frame, and the idle
+    ships at the stylized gain, so bookended clips keep that gain and meet
+    the idle with the same wrist (KIMODO.md §2).
     """
     for rec in constraints or []:
         if rec.get("rotConstrained") is False:
+            continue
+        if rec.get("source") == "stance_bookend":
             continue
         if rec.get("role") in ("LeftHand", "RightHand"):
             return True
@@ -125,7 +130,7 @@ def has_authored_hand_rotation(constraints):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in-dir", "--in", default=os.path.join(HERE, "out/moves"))
-    ap.add_argument("--web-dir", "--web", default=os.path.join(HERE, "../web/moves_kimodo"))
+    ap.add_argument("--web-dir", "--web", default=os.path.join(HERE, "out/web"))
     ap.add_argument("--spec", default=os.path.join(HERE, "moveset_mk.json"),
                     help="move spec; defines output order and loop flags")
     ap.add_argument("--all", action="store_true",
@@ -188,8 +193,7 @@ def main():
         straight-bind hand by that 18°. Pre-rotating the hand rest onto the
         forearm axis makes the anchor "straight source wrist ↔ straight
         character hand": absolute bend tracking. (Only valid together with
-        retarget.js's world-axes wrist mapping — under the old bone-local
-        splice this same correction rotated about wrong axes.)
+        retarget.js's world-axes wrist mapping.)
         """
         sk77 = SOMASkeleton77()
         sk = sk77 if J == 77 else SOMASkeleton30()

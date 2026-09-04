@@ -129,9 +129,8 @@ of direction change; disabling the source path costs up to **179°** of roll
 on the regenerated move set), taking the fist with it. Any clip carrying
 quaternions therefore rebuilds the forearm from the source forearm's full
 world delta — true mocap pronation/supination, stable by nature — then
-rotates minimally onto the aimed direction. This is automatic and is the
-ONLY quaternion path; the old per-clip `foreRollSrc` switch was removed
-(evidence/README.md).
+rotates minimally onto the aimed direction. This is automatic for every
+clip that carries quaternions (evidence/README.md).
 
 **Wrist articulation gain (`handFollow`).** Even with correct anchors and
 axes, raw mocap wrist channels read poorly on game hands: every twitch,
@@ -146,19 +145,16 @@ STYLIZATION, not a correctness guard — measured, it discards 22.8° mean /
 `handFollow = 1` and the stylization delta separately, and clips with
 **authored hand constraints are baked at 1.0** (an exact target must never
 be damped; the constraint IK applies the authored orientation exactly at
-constrained frames).
+constrained frames). The stance bookend does not count: it is lifted from
+the idle's medoid frame — a prediction the idle ships at 0.3 — so bookended
+clips stay at the idle's gain and meet it with the same wrist; a whole
+MK-style set therefore certifies in one run.
 
-**Deleted guards.** The retargeter used to carry an anatomical hand clamp
-(85°/70°), a torso-capsule arm displacement, a 40°/frame temporal continuity
-slew, and an optional ground lift. All four were ablated per-intervention on
-the regenerated move set across both certified reference rigs and deleted:
-the temporal guards never engaged (Δ = 0°) while making poses depend on
-playback history; the clamp clipped VALID authored wrists by up to 15.5°;
-the capsule displaced valid near-face guard poses with zero measured torso
-penetration in the unguarded baseline. The transfer is now unguarded and
-deterministic; torso clearance, ground penetration, branch flips, and
-contact-frame skate are measured by QA instead of silently corrected.
-Numbers and reproduction commands: `evidence/README.md`.
+**No runtime guards.** The transfer is unguarded and deterministic: torso
+clearance, ground penetration, branch flips, and contact-frame skate are
+measured by QA (`qa_constraints.mjs`, the certification gates) instead of
+silently corrected. The measurements behind that design, and the reasons
+not to re-add a clamp or a temporal smoother: `evidence/README.md`.
 
 ## 3. The tooling in `kimodo/` (this repo)
 
@@ -191,7 +187,7 @@ python kimogen.py stance
 TEXT_ENCODERS_DIR=... python kimogen.py gen --spec moveset_mk.json
 python kimogen.py report          # gate table
 # 4. bake for the runtime (INTEGRATE.md)
-python bake_kimodo.py --web ../web/moves_kimodo
+python bake_kimodo.py --web out/web
 ```
 
 ### The stance bookend, mechanically
@@ -229,14 +225,16 @@ canonicalized clip. Everything in ALIGN.md (certification) and INTEGRATE.md
 **Constraint accuracy gates** — `qa_constraints.mjs <char.glb> <movesDir>
 --gate` measures every stage separately so a later stage cannot hide an
 earlier failure: (1) authored target → final SOMA output (pos ≤ 5 mm, rot ≤
-2°, root XZ ≤ 2 cm, from the baked records), (2) SOMA → UNGUARDED character
+2°, root XZ ≤ 2 cm, from the baked records), (2) SOMA → raw character
 transfer (full-quaternion + swing/twist fidelity at `handFollow = 1`, plus
-round-trip recovery), (3) the delta each retained style modifier introduces
+round-trip recovery), (3) the delta the `handFollow` stylization introduces
 (and whether it touches an authored constrained frame — reported, never
 silent), (4) final character vs the mapped authored target through the
 constraint IK (pos p95 ≤ 2 cm / max ≤ 4 cm, rot p95 ≤ 5° / max ≤ 10°;
 geometrically unreachable targets are clamped explicitly, reported, and fail
-unless the move declares `reach_policy: "clamp"`). Plus: no NaN, no invalid
+unless the move declares `reach_policy: "clamp"`; foot keys inside a
+predicted contact run are held across the run so the IK never slides a
+planted foot — the contact-frame skate gate below is what caught that). Plus: no NaN, no invalid
 quaternion, no one-frame branch flip, no new contact-frame foot skate (using
 the stored predicted contact channels), and sequential == direct-seek
 determinism. Emits machine-readable JSON (`--json`) and a table; a metric

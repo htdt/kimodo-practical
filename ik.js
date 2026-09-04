@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 
-// Target-space end-effector IK for AUTHORED constraints (task: retargeting by
-// limb direction alone cannot guarantee that a character with different
-// proportions hits a mapped world-space target — measured miss on certified
-// rigs is ~2-6 cm at authored hand targets, see qa_constraints.mjs).
+// Target-space end-effector IK for AUTHORED constraints: retargeting by limb
+// direction alone cannot guarantee that a character with different
+// proportions hits a mapped world-space target (measured miss on certified
+// rigs: 2-6 cm at authored hand targets, qa_constraints.mjs).
 //
 // Design rules (the constraint IK contract):
 //  - Canonical SOMA targets are mapped through the SAME root-yaw, root-scale
@@ -19,6 +19,14 @@ import * as THREE from 'three';
 //    (symmetric windows clipped to half the gap between records), never from
 //    playback history. Applying frame f produces the same pose whether frames
 //    run sequentially, are sought directly, play at any speed, or bake offline.
+//  - Planted-foot HOLD: a foot key that falls inside one of the clip's
+//    predicted foot-contact runs (`contacts`/`contactJoints`, BAKE.md §1) is
+//    held at full weight across the whole run and blended only outside it —
+//    while the foot is in the air. Blending toward a key on a planted foot
+//    drags the foot out and back by the rig's proportion mismatch (measured
+//    5.4 cm at up to 0.34 m/s on a certified Tripo rig, 2 cm on the
+//    reference fighter): visible skate on exactly the frames the source
+//    keeps still. The hold is static clip data, so determinism is kept.
 //  - Geometrically unreachable targets are clamped to the reachable sphere
 //    explicitly and marked `reachable: false` — QA fails them unless the move
 //    opts into a documented reach policy.
@@ -36,6 +44,39 @@ const CHAINS = {
 const DEFAULT_WINDOW = 6;                       // frames of blend-in/out around a key
 
 const smooth = (t) => t * t * (3 - 2 * t);      // C1 ease, exact 0/1 at the ends
+const CONTACT_GAP = 2;                           // frames: contact labels flicker, planted feet do not
+
+// predicted foot-contact runs per side, [[first, last], ...] (inclusive),
+// from the clip's stored contact channels (model PREDICTIONS with their joint
+// mapping). Gaps of up to CONTACT_GAP frames inside a run are bridged. Returns
+// null when the clip carries no channels — the hold is then never active.
+export function footContactRuns(clip) {
+  if (!Array.isArray(clip?.contacts) || !Array.isArray(clip?.contactJoints)) return null;
+  const N = clip.numFrames ?? clip.pos.length;
+  const out = {};
+  for (const side of ['Left', 'Right']) {
+    const on = new Array(N);
+    for (let f = 0; f < N; f++)
+      on[f] = clip.contactJoints.some((j, k) => j.startsWith(side) && clip.contacts[f]?.[k] > 0.5);
+    for (let f = 1; f < N - 1; f++) {
+      if (on[f]) continue;
+      let g = f;
+      while (g < N && !on[g]) g++;
+      if (g < N && on[f - 1] && g - f <= CONTACT_GAP) for (let k = f; k < g; k++) on[k] = true;
+      f = g;
+    }
+    const runs = [];
+    for (let f = 0; f < N; f++) {
+      if (!on[f]) continue;
+      let e = f;
+      while (e + 1 < N && on[e + 1]) e++;
+      runs.push([f, e]);
+      f = e;
+    }
+    out[side] = runs;
+  }
+  return out;
+}
 
 // map baked end-effector records into character space once per clip
 export function mapRecordTargets(rt, records) {
@@ -84,13 +125,28 @@ export class ConstraintIK {
       if (!this.byRole.has(t.role)) this.byRole.set(t.role, []);
       this.byRole.get(t.role).push(t);
     }
-    for (const list of this.byRole.values()) {
+    this.contactRuns = footContactRuns(rt.data);
+    for (const [role, list] of this.byRole) {
       list.sort((a, b) => a.frame - b.frame);
-      // deterministic blend windows: clipped to half the gap toward the
-      // neighboring record so windows can never overlap or interact
+      // planted-foot hold: a foot key inside a predicted contact run keeps
+      // full weight across the run (a foot lock) on every side of the key
+      // that has no other record inside the same run; hands and clips
+      // without contact channels hold the key frame only
+      const runs = role.endsWith('Foot') && this.contactRuns
+        ? this.contactRuns[role.startsWith('Left') ? 'Left' : 'Right'] : null;
       for (let i = 0; i < list.length; i++) {
-        const prevGap = i > 0 ? list[i].frame - list[i - 1].frame : Infinity;
-        const nextGap = i < list.length - 1 ? list[i + 1].frame - list[i].frame : Infinity;
+        const t = list[i];
+        t.holdL = t.holdR = t.frame;
+        const run = runs?.find(([s, e]) => t.frame >= s && t.frame <= e);
+        if (!run) continue;
+        if (!(i > 0 && list[i - 1].frame >= run[0])) t.holdL = run[0];
+        if (!(i < list.length - 1 && list[i + 1].frame <= run[1])) t.holdR = run[1];
+      }
+      // deterministic blend windows outside the hold: clipped to half the
+      // gap toward the neighboring record so windows can never overlap or interact
+      for (let i = 0; i < list.length; i++) {
+        const prevGap = i > 0 ? list[i].holdL - list[i - 1].holdR : Infinity;
+        const nextGap = i < list.length - 1 ? list[i + 1].holdL - list[i].holdR : Infinity;
         list[i].wL = Math.min(window, Math.floor(prevGap / 2));
         list[i].wR = Math.min(window, Math.floor(nextGap / 2));
       }
@@ -110,15 +166,15 @@ export class ConstraintIK {
     this.lastSolves = [];                       // diagnostics for the frame just applied
   }
 
-  // active record + weight for a role at frame f (nearest record; ties -> earlier)
+  // active record + weight for a role at frame f (nearest hold; ties -> earlier)
   _active(role, f) {
     let best = null, bestD = Infinity;
     for (const t of this.byRole.get(role)) {
-      const d = Math.abs(f - t.frame);
+      const d = f < t.holdL ? t.holdL - f : (f > t.holdR ? f - t.holdR : 0);
       if (d < bestD) { best = t; bestD = d; }
     }
     if (!best) return null;
-    const span = f < best.frame ? best.wL : best.wR;
+    const span = f < best.holdL ? best.wL : best.wR;
     if (bestD > span) return null;
     const w = bestD === 0 ? 1 : smooth(1 - bestD / (span + 1));
     return { rec: best, w };
@@ -150,6 +206,7 @@ export class ConstraintIK {
       const qA = this._worldQ(a), qB = this._worldQ(b), qC = this._worldQ(c);
 
       const solve = { role, frame: f, keyFrame: rec.frame, weight: +w.toFixed(4), reachable: true };
+      if (rec.holdL !== rec.holdR) solve.hold = [rec.holdL, rec.holdR];
       let qA2 = qA, qB2 = qB;
       if (rec.posConstrained) {
         const d = rec.pos.clone().sub(pA);

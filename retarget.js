@@ -20,8 +20,8 @@ import { resolveRig } from './rigmap.js';
 //    roll around each bone follows the body and setFromUnitVectors only contributes the
 //    residual swing — hands riding the forearm keep a natural palm facing;
 //  - forearms with quaternion sources take their roll from the source forearm's own
-//    world delta (true pronation/supination) — the ONLY quaternion path since the
-//    ablation showed the chest-rebase projection off by up to 179° (evidence/README.md);
+//    world delta (true pronation/supination); the body-rebase projection alone
+//    measures up to 179° of roll error (evidence/README.md);
 //  - feet take the source ankle's TRUE orientation (data.quat), transferred
 //    pelvis-relative, giving real heel-strike/toe-off instead of inheriting the shin;
 //  - HANDS ride the character's forearm and add the source's own wrist-vs-forearm
@@ -30,15 +30,9 @@ import { resolveRig } from './rigmap.js';
 //
 // The transfer is DETERMINISTIC and stateless per frame: applying frame f yields
 // the same pose under sequential playback, direct seek, any speed, or offline
-// baking. The historical guards (handClamp, torsoCapsule, continuity slew,
-// ground lift) were ablated on the regenerated move set across two certified
-// rigs and deleted: none had a reproducible benefit after the rest-anchor fix,
-// the clamp clipped valid authored wrists by up to 15.5°, the capsule displaced
-// valid near-face guard poses with zero measured torso penetration in the
-// baseline, and the temporal guards made results depend on playback history
-// (evidence/README.md). Torso clearance, ground penetration, branch flips, and
-// foot skate remain MEASURED QA metrics (qametrics.mjs) instead of silent
-// runtime corrections.
+// baking. It carries no runtime guards: torso clearance, ground penetration,
+// branch flips, and foot skate are MEASURED by QA (qametrics.mjs) rather than
+// corrected; the ablation behind that design: evidence/README.md.
 
 export function buildBoneOrder(root) {
   const out = [];
@@ -134,21 +128,20 @@ const FULLQ = {
   LeftFoot: 'LeftFoot',
   RightFoot: 'RightFoot',
 };
-// HANDS are transferred FOREARM-RELATIVE instead: the old chest-relative
-// absolute transfer re-anchored the hand to the character's T-pose bind, but
-// near source rest the arms HANG — the anchor mismatch cocked the wrists ~70°
-// against the forearm (pinned on the clamp: "odd fists" at rest-ish poses) and
-// let the deviation wander past 180°, where any clamp flips branch (the
-// one-frame ~176° fist flicker). Riding the forearm and applying the source's
-// own wrist-vs-forearm delta keeps the deviation small and continuous.
+// HANDS are transferred FOREARM-RELATIVE: the hand rides the character's
+// forearm and adds the source's own wrist-vs-forearm delta (identity at
+// source rest). Anchoring the hand to the chest or the T-pose bind instead
+// cocks the wrist ~70° whenever the source arms hang near rest and lets the
+// deviation wander past 180°, where it flips branch for a frame; the
+// forearm-relative delta stays small and continuous.
 const HAND_LOCAL = {
   LeftHand:  'LeftForeArm',
   RightHand: 'RightForeArm',
 };
 // head/neck: damped toward the overall body heading instead of riding chest twist 1:1
 const HEAD_DAMP = { Neck: 0.45, Head: 0.2 };
-// per-role anatomical twist axes are still derived at bind (twistAxis) for
-// QA's swing/twist metrics; there is no runtime clamp anymore
+// per-role anatomical twist axes are derived at bind (twistAxis) for QA's
+// swing/twist metrics
 
 const _v = (a) => new THREE.Vector3(a[0], a[1], a[2]);
 
@@ -166,22 +159,16 @@ function frameQ(origin, upPt, rA, rB) {
 }
 
 // The reference "raw transfer" configuration: corrected rest anchors,
-// world-axis wrist mapping, full source wrist transfer. Since the guard
-// cleanup (evidence/README.md) the only shipped modifier on top of this
-// baseline is the per-clip `handFollow` stylization gain, so the baseline is
-// simply handFollow = 1. Kept as a named helper so diagnostics stay explicit
-// about which configuration they measured.
-export function baselineOptions(data) {
-  void data;
+// world-axis wrist mapping, full source wrist transfer. The only shipped
+// modifier on top of it is the per-clip `handFollow` stylization gain, so the
+// baseline is handFollow = 1; a named helper keeps diagnostics explicit about
+// which configuration they measured.
+export function baselineOptions() {
   return { handFollow: 1 };
 }
 
 export class Retargeter {
-  constructor({ bones, orderedBones, hips, hipsParent, data, inPlace, rig, srcMap, handFollow, ...rest }) {
-    if ('guards' in rest || 'foreRollSrc' in rest)
-      throw new Error('retarget guards and the foreRollSrc switch were removed after the '
-        + 'guard ablation (evidence/README.md): the transfer is unguarded and source '
-        + 'forearm roll is automatic for quaternion clips');
+  constructor({ bones, orderedBones, hips, hipsParent, data, inPlace, rig, srcMap, handFollow }) {
     if (!data || !Array.isArray(data.names) || !Array.isArray(data.rest) || !Array.isArray(data.pos))
       throw new Error('motion data requires names, rest, and pos arrays');
     if (!Array.isArray(orderedBones) || !orderedBones.length)
@@ -376,9 +363,7 @@ export class Retargeter {
       throw new Error(`cannot derive a positive root scale; got ${this.scaleRoot}`);
 
     // foot/toe bones with their bind-pose world heights — consumed by the QA
-    // ground-penetration metric (the runtime ground-lift guard was deleted:
-    // it never engaged on the representative suite and its temporal settling
-    // was history-dependent; see evidence/README.md)
+    // ground-penetration metric
     this.groundBones = [];
     for (const role of ['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase']) {
       const name = this.R[role];
@@ -403,9 +388,8 @@ export class Retargeter {
     if (!Number.isFinite(this.handFollow) || this.handFollow < 0 || this.handFollow > 1)
       throw new Error(`handFollow must be between 0 and 1; got ${this.handFollow}`);
     // forearm roll comes from the source's own quaternions whenever the clip
-    // carries them — the single quaternion path (the chest-rebase projection
-    // measured up to 179° of roll error on real clips; evidence/README.md)
-    this.foreRollSrc = this.hasQuat;
+    // carries them (the body-rebase projection alone measured up to 179° of
+    // roll error on real clips; evidence/README.md)
     if (this.hasQuat) {
       this.restQInv = {};
       for (const name in this.fullqByBone) {
@@ -419,11 +403,9 @@ export class Retargeter {
       // the source wrist-vs-forearm delta is mapped through the WORLD axes
       // at rest/bind (both are the same canonical pose), never through raw
       // bone-local axes — source and character rigs disagree arbitrarily on
-      // bone frames. (The old form  foreNow·srcForeNow⁻¹·srcWristNow·
-      // restW⁻¹·restF·bindFore⁻¹·bindHand  spliced the source-local delta
-      // straight into the character chain; with near-rigid wrists both
-      // coincide, but real mocap wrist deviations got applied about wrong
-      // axes: cocked "skewed fists", caught by qa_endeffectors.mjs.)
+      // bone frames. Splicing the source-local delta straight into the
+      // character chain applies real wrist deviations about the wrong axes
+      // ("skewed fists"), which qa_endeffectors.mjs measures.
       this.handM = {}; this.handT = {}; this.handRide = {};
       for (const name in this.handByBone) {
         const [sw, sf, foreName] = this.handByBone[name];
@@ -444,13 +426,11 @@ export class Retargeter {
   }
 
   // The complete effective transfer configuration — what a diagnostic run
-  // must record so results are attributable to an exact setup, replacing the
-  // old ambiguous "--noguards" notion. After the guard cleanup the only
-  // modifier left beyond the raw transfer is handFollow.
+  // records so results are attributable to an exact setup. The only modifier
+  // beyond the raw transfer is handFollow.
   configDump() {
     return {
       handFollow: this.handFollow,
-      foreRollSrc: this.foreRollSrc,             // derived: quaternion clips only
       inPlace: this.inPlace,
       yLift: this.yLift,
       hasQuat: this.hasQuat,
@@ -557,7 +537,7 @@ export class Retargeter {
 
     // per-frame transfer state, exposed for QA / constraint IK
     this.frameState = { f, Fp, FpInv, Fc, pelvisDelta, chestDelta, hipsWorld };
-    this.rawTargets = {};                     // bone name -> pre-guard demand (world quat)
+    this.rawTargets = {};                     // bone name -> raw source demand (world quat), before handFollow
 
     for (const b of this.orderedBones) {
       const parentWorld = (b.parent && this.animWorld[b.parent.uuid]) ? this.animWorld[b.parent.uuid]
@@ -587,7 +567,7 @@ export class Retargeter {
         // (carries the true mocap pronation/supination — stable), then
         // rotate minimally onto the aimed direction. The residual minrot is
         // small (source dir ≈ aimed dir), so it adds no twist artifact.
-        if (this.foreRollSrc &&
+        if (this.hasQuat &&
             (aimRole === 'LeftForeArm' || aimRole === 'RightForeArm')) {
           const dSrc = this._yawRebase(this._q(this.data.quat[f][this.idx[sj]])
             .multiply(this._q(this.data.restQuat[this.idx[sj]]).invert()));

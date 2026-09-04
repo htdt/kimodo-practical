@@ -1,11 +1,12 @@
 // Shared measurement machinery for constraint QA (qa_constraints.mjs) and
-// the guard/modifier ablation runner (ablate.mjs).
+// the transfer-modifier ablation runner (ablate.mjs).
 //
 // One `captureRun` = one (character, clip, transfer-config) evaluation:
 // construct a fresh Retargeter on a bind-reset skeleton, apply every frame,
 // and record everything the metrics need — end-effector world poses, raw
-// (pre-guard) demands, local quaternions for flip detection, foot heights
-// for skate/penetration, hips trajectory, and IK solve diagnostics. Metrics
+// source demands (before handFollow), local quaternions for flip detection,
+// foot heights for skate/penetration, hips trajectory, and IK solve
+// diagnostics. Metrics
 // are pure functions over captures, so any two configurations can be
 // compared without re-running the transfer.
 import * as THREE from 'three';
@@ -223,7 +224,7 @@ export function poseValidity(capture) {
 }
 
 // max per-bone world-orientation difference between two captures (deg) and
-// max EE position difference (m) — determinism / guard-delta measurements
+// max EE position difference (m) — determinism / modifier-delta measurements
 export function captureDelta(a, b) {
   if (a.N !== b.N) throw new Error('captures cover different frame counts');
   let rot = 0, pos = 0;

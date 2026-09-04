@@ -113,7 +113,7 @@ const tgt = rigFromBones(buildRig(tgtSpec, 0.01).all);
 {
   const cap = captureRun(tgt, clip, { config: baselineOptions(clip) });
   check('baseline config dump reflects raw transfer', cap.config.handFollow === 1
-    && cap.config.foreRollSrc === true && !('guards' in cap.config));
+    && cap.config.hasQuat === true);
   const fid = sourceFidelity(cap);
   check('baseline wrist fidelity tight on rig with different bind heading',
     fid.LeftHand.rot.p95 < 8, `p95 ${fid.LeftHand.rot.p95}°`);
@@ -266,6 +266,48 @@ for (const [label, spec, scale] of [['same-proportions rig', tgtSpec, 0.01],
     .applyQuaternion(rt.rootYaw).multiplyScalar(rt.scaleRoot).add(rt.hipsBindWorldPos);
   check('mapSrcPoint == root-yaw ∘ root-scale ∘ bind translate',
     t.pos.distanceTo(expect) < 1e-9);
+}
+
+// planted-foot hold: a foot key inside a predicted contact run is held at
+// full weight across the run (foot lock) and blended only in the air — the
+// constraint IK must never drag a planted foot toward its key and back
+{
+  const target = rigFromBones(buildRig(tgtSpec, 0.01).all);
+  const fi = clip.names.indexOf(srcMap.LeftFoot);
+  const key = 25, runL = 10, runR = 40;
+  const held = { ...clip, contactJoints: ['LeftFoot', 'RightFoot'],
+    contacts: Array.from({ length: N }, (_, f) => [f >= runL && f <= runR ? 1 : 0, 0]),
+    constraints: [{ family: 'end-effector', type: 'left-foot', source: 'inline',
+      originalType: 'test', required: true, provenance: 'x', frame: key, role: 'LeftFoot',
+      pos: [...clip.pos[key][fi]], quat: [...clip.quat[key][fi]],
+      posConstrained: true, rotConstrained: true }] };
+  const noIK = captureRun(target, held, { config: baselineOptions(held) });
+  const cap = captureRun(target, held, { config: baselineOptions(held), ik: true });
+  const inRun = cap.solves.filter(s => s.role === 'LeftFoot' && s.frame >= runL && s.frame <= runR);
+  check('planted-foot hold: full weight across the whole contact run',
+    inRun.length === runR - runL + 1 && inRun.every(s => s.weight === 1), `${inRun.length} solves`);
+  let heldStep = 0, freeStep = 0;
+  for (let f = runL + 1; f <= runR; f++) {
+    heldStep = Math.max(heldStep, cap.rows[f].roles.LeftFoot.pos.distanceTo(cap.rows[f - 1].roles.LeftFoot.pos));
+    freeStep = Math.max(freeStep, noIK.rows[f].roles.LeftFoot.pos.distanceTo(noIK.rows[f - 1].roles.LeftFoot.pos));
+  }
+  check('planted-foot hold: the held foot does not move during the run',
+    heldStep < 1e-4 && freeStep > 1e-3, `held step ${heldStep.toFixed(5)} m vs unheld ${freeStep.toFixed(5)} m`);
+  const dOut = quatAngleDeg(noIK.rows[N - 1].roles.LeftFoot.quat, cap.rows[N - 1].roles.LeftFoot.quat);
+  check('planted-foot hold: pose untouched beyond the run + blend window', dOut < 1e-6, `Δ ${dOut}°`);
+  const seek = captureRun(target, held, { config: baselineOptions(held), ik: true, order: 'seek' });
+  check('planted-foot hold: seek == sequential', captureDelta(cap, seek).maxRotDeg < 1e-6);
+  const acc = constraintAccuracy(cap);
+  check('planted-foot hold: key frame still lands exactly',
+    acc.summary.LeftFoot.unreachable === 0 && acc.summary.LeftFoot.pos.max <= 0.005,
+    JSON.stringify(acc.summary.LeftFoot));
+  // a hand key never holds (no contact channel for hands) and a foot key
+  // outside every run keeps the plain ±window behaviour
+  const air = { ...held, constraints: [{ ...held.constraints[0], frame: 50 }] };
+  const capAir = captureRun(target, air, { config: baselineOptions(air), ik: true });
+  const airW = capAir.solves.filter(s => s.role === 'LeftFoot').map(s => s.frame);
+  check('planted-foot hold: a key outside every contact run blends over the plain window',
+    Math.min(...airW) === 44 && Math.max(...airW) === 56, `frames ${Math.min(...airW)}..${Math.max(...airW)}`);
 }
 
 console.log(failures ? `\n${failures} FAILURES` : '\nconstraint selftest passed (no external assets used)');

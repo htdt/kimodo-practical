@@ -1,12 +1,9 @@
 #!/usr/bin/env node
 // Transfer-modifier ABLATION RUNNER — the evidence generator behind every
-// keep-or-delete decision. The historical guards (handClamp, torsoCapsule,
-// continuity, ground) and the chest-rebase forearm-roll path were measured
-// with this tool and DELETED; their recorded numbers live in
-// evidence/README.md and the pre-removal tree in git history. What remains
-// to ablate is the retained per-clip stylization (handFollow) and the
-// constraint IK, each alone on the raw baseline and in the shipped
-// combination, measuring per configuration:
+// keep-or-delete decision on the transfer (recorded runs: evidence/README.md).
+// It measures each shipped modifier — the per-clip stylization (handFollow)
+// and the constraint IK — alone on the raw baseline and in the shipped
+// combination, per configuration:
 //
 //   - hand/foot authored-target position + full-orientation error (stage 4)
 //   - source-motion fidelity (full-quaternion wrist/ankle error vs the source

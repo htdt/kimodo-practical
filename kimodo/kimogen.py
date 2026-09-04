@@ -144,6 +144,14 @@ def gate_sample(j, r, fc, idx, mv, stance, fps):
         elif apex["kind"] == "ankle_height":
             g["apex_val"] = max(float(j[:, idx["LeftFoot"], 1].max()),
                                 float(j[:, idx["RightFoot"], 1].max()))
+        elif apex["kind"] == "foot_excursion":
+            # sweeps, lunges, steps: how far either foot travels horizontally
+            # from where it started. A "sweep" that only crouches passes a
+            # root_dip gate with its feet 2.5 cm from their stance spots —
+            # the defining moment of a sweep is the foot going somewhere.
+            feet = [idx["LeftFoot"], idx["RightFoot"]]
+            xz = j[:, feet][:, :, [0, 2]]
+            g["apex_val"] = float(np.linalg.norm(xz - xz[0][None], axis=-1).max())
         g["apex_ok"] = ((apex.get("min") is None or g["apex_val"] >= apex["min"])
                         and (apex.get("max") is None or g["apex_val"] <= apex["max"]))
     else:
@@ -240,7 +248,7 @@ def best_loop(j, r, min_len, max_len, must_span=None):
 # ------------------------------------------------------------- constraints --
 # Hard adherence gates on the winning sample, in the native/canonical frame
 # (rigid-invariant). EE and root2d numbers are the accuracy contract
-# (task: authored target -> final SOMA output); fullbody is gated on its
+# (authored target -> final SOMA output); fullbody is gated on its
 # hand/foot/head end-effector set as well as the root. This makes arbitrary
 # authored key poses fail loudly if MotionCorrection does not land the pose.
 CONSTRAINT_GATES = {
@@ -659,7 +667,8 @@ def main():
                      "(constraint-only moves omit the prompt explicitly)")
     valid_travel = {None, "in_place", "fwd", "back"}
     valid_apex = {"root_rise": "min", "root_dip": "min",
-                  "root_floor": "max", "ankle_height": "min"}
+                  "root_floor": "max", "ankle_height": "min",
+                  "foot_excursion": "min"}
 
     def valid_bound(v):
         return (not isinstance(v, bool) and isinstance(v, (int, float))

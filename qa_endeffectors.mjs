@@ -24,7 +24,7 @@
 // qa_constraints.mjs and must be run alongside.
 //
 // Usage: node qa_endeffectors.mjs <char.glb> <movesDir> [--gate]
-//        e.g. node qa_endeffectors.mjs ../web/fighter.glb ../web/moves_kimodo --gate
+//        e.g. node qa_endeffectors.mjs character.glb baked --gate
 // Gates: median |foot pitch| <= 10 deg on contact frames,
 //        median hand skew   <= 40 deg over all frames (per side, per clip),
 //        with aggregate medians <= 4 / 15 deg.

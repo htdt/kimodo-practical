@@ -72,6 +72,28 @@ class KimodoToolTests(unittest.TestCase):
         self.assertFalse(gates["jitter_ok"])
         self.assertFalse(gates["pass"])
 
+    def test_foot_excursion_gate_rejects_a_sweep_that_only_crouches(self):
+        names = [
+            "LeftHand", "RightHand", "LeftFoot", "RightFoot", "Head",
+            "LeftToeBase", "LeftToeEnd", "RightToeBase", "RightToeEnd",
+        ]
+        idx = {name: i for i, name in enumerate(names)}
+        joints = np.zeros((4, len(names), 3), dtype=float)
+        roots = np.zeros((4, 3), dtype=float)
+        roots[1:3, 1] = -0.4                       # a deep dip ...
+        crouch = gate_sample(joints, roots, np.ones((4, 6)), idx,
+                             {"travel": None, "apex": {"kind": "foot_excursion", "min": 0.5}},
+                             None, 30)
+        self.assertAlmostEqual(crouch["apex_val"], 0.0)
+        self.assertFalse(crouch["apex_ok"])       # ... is not a sweep
+        joints[2, idx["RightFoot"], 0] = 0.6      # the right foot travels 0.6 m
+        joints[2, idx["RightFoot"], 2] = 0.3
+        sweep = gate_sample(joints, roots, np.ones((4, 6)), idx,
+                            {"travel": None, "apex": {"kind": "foot_excursion", "min": 0.5}},
+                            None, 30)
+        self.assertAlmostEqual(sweep["apex_val"], np.hypot(0.6, 0.3))
+        self.assertTrue(sweep["apex_ok"])
+
     def test_best_loop_handles_short_clips(self):
         joints = np.zeros((3, 2, 3), dtype=float)
         roots = np.zeros((3, 3), dtype=float)
@@ -96,6 +118,14 @@ class KimodoToolTests(unittest.TestCase):
              "ee": {"LeftHand": {"quat": [0, 0, 0, 1]}}}]))
         self.assertFalse(has_authored_hand_rotation([
             {"family": "end-effector", "role": "LeftFoot", "rotConstrained": True}]))
+        # the stance bookend is lifted from the idle prediction: it ships at
+        # the idle's gain so bookended clips meet the idle with the same wrist
+        self.assertFalse(has_authored_hand_rotation([
+            {"family": "fullbody", "source": "stance_bookend", "rotConstrained": True,
+             "ee": {"LeftHand": {"quat": [0, 0, 0, 1]}}}]))
+        self.assertTrue(has_authored_hand_rotation([
+            {"family": "fullbody", "source": "inline", "rotConstrained": True,
+             "ee": {"RightHand": {"quat": [0, 0, 0, 1]}}}]))
 
     def test_minrot_handles_opposite_vectors(self):
         rotation = minrot(np.array([1.0, 0.0, 0.0]),

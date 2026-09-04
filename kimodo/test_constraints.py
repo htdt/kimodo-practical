@@ -299,11 +299,12 @@ class ResolveAndTransformTests(unittest.TestCase):
         self.assertEqual(len(recs), 2)
 
     def test_demo_constraint_files_load_without_rewriting(self):
-        demo = os.environ.get(
-            "KIMODO_DEMO",
-            os.path.expanduser(
-                "~/Downloads/ani_test/kimodo/kimodo/assets/demo/examples/kimodo-soma-rp"))
-        if not os.path.isdir(demo):
+        try:
+            from kimodo.make_e2e_spec import demo_examples_dir
+        except ImportError:
+            from make_e2e_spec import demo_examples_dir
+        demo = demo_examples_dir()
+        if not demo or not os.path.isdir(demo):
             self.skipTest("upstream demo examples not available")
         for name, frames in [("04_ee_constraint", 120), ("03_full_body_keyframes", 135),
                              ("06_root_waypoints", 181), ("05_root_path", 300),
